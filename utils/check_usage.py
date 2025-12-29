@@ -288,8 +288,9 @@ async def check_ip_used() -> dict:
         has_special_limit = email in special_limit
         is_except = email in except_users
         
-        # Skip users with device count < general_limit
-        if device_count < general_limit:
+        # Skip users who are not exceeding their limit
+        # A user violates when device_count > user_limit
+        if device_count <= user_limit:
             continue
         
         users_shown += 1
