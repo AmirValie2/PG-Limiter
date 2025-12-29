@@ -17,5 +17,21 @@
   "time_to_active_users": 900,
   "country_code": "",
   "disable_method": "status",
-  "disabled_group_id": null
+  "disabled_group_id": null,
+  "group_filter": {
+    "enabled": false,
+    "mode": "include",
+    "group_ids": []
+  },
+  "punishment": {
+    "enabled": true,
+    "window_hours": 72,
+    "steps": [
+      {"type": "warning", "duration": 0},
+      {"type": "disable", "duration": 15},
+      {"type": "disable", "duration": 60},
+      {"type": "disable", "duration": 240},
+      {"type": "disable", "duration": 0}
+    ]
+  }
 }

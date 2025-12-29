@@ -431,7 +431,7 @@ async def disable_user_by_group(panel_data: PanelType, username: str, disabled_g
         return False
 
 
-async def disable_user(panel_data: PanelType, username: UserType) -> None | ValueError:
+async def disable_user(panel_data: PanelType, username: UserType, duration_seconds: int = 0) -> None | ValueError:
     """
     Disable a user on the panel.
     Uses either status-based or group-based disabling depending on config.
@@ -441,6 +441,8 @@ async def disable_user(panel_data: PanelType, username: UserType) -> None | Valu
         panel_data (PanelType): A PanelType object containing
         the username, password, and domain for the panel API.
         username (user): The username of the user to disable.
+        duration_seconds (int): Optional custom disable duration in seconds.
+                                0 = use default time_to_active_users from config.
 
     Returns:
         None
@@ -478,13 +480,116 @@ async def disable_user(panel_data: PanelType, username: UserType) -> None | Valu
     
     if success:
         dis_obj = DisabledUsers()
-        await dis_obj.add_user(username.name)
+        await dis_obj.add_user(username.name, duration_seconds)
         return None
     
     message = f"Failed to disable user: {username.name}"
     await safe_send_logs_panel(message)
     logger.error(message)
     raise ValueError(message)
+
+
+async def disable_user_with_punishment(panel_data: PanelType, username: UserType) -> dict:
+    """
+    Disable a user using the smart punishment system.
+    Applies escalating punishments based on violation history.
+
+    Args:
+        panel_data (PanelType): A PanelType object containing
+        the username, password, and domain for the panel API.
+        username (UserType): The username of the user to disable.
+
+    Returns:
+        dict: Result containing:
+            - action: "warning" | "disabled" | "error" | "skipped"
+            - step_index: Which punishment step was applied
+            - violation_count: Total violations for this user
+            - duration_minutes: Disable duration (0 = unlimited or warning)
+            - message: Human-readable message
+    """
+    from utils.punishment_system import get_punishment_for_user, record_user_violation
+    
+    # Check if user exists in panel before trying to disable
+    user_exists = await check_user_exists(panel_data, username.name)
+    if not user_exists:
+        message = f"User {username.name} not found in panel (deleted?), skipping"
+        logger.warning(message)
+        return {
+            "action": "skipped",
+            "step_index": 0,
+            "violation_count": 0,
+            "duration_minutes": 0,
+            "message": message
+        }
+    
+    # Read config and get punishment
+    data = await read_config()
+    punishment, step_index, violation_count = await get_punishment_for_user(username.name, data)
+    
+    # Check if punishment system is disabled
+    punishment_enabled = data.get("punishment", {}).get("enabled", True)
+    
+    if not punishment_enabled:
+        # Punishment disabled - use regular disable
+        try:
+            await disable_user(panel_data, username)
+            return {
+                "action": "disabled",
+                "step_index": 0,
+                "violation_count": 0,
+                "duration_minutes": 0,
+                "message": f"User {username.name} disabled (punishment system disabled)"
+            }
+        except ValueError as e:
+            return {
+                "action": "error",
+                "step_index": 0,
+                "violation_count": 0,
+                "duration_minutes": 0,
+                "message": str(e)
+            }
+    
+    # Apply the punishment
+    if punishment.is_warning():
+        # Warning only - don't disable, just record
+        await record_user_violation(username.name, step_index, 0)
+        message = (f"⚠️ Warning #{violation_count + 1} for {username.name}\n"
+                   f"Next violation will result in: {punishment.get_display_text() if step_index + 1 >= len(data.get('punishment', {}).get('steps', [])) else 'disable'}")
+        return {
+            "action": "warning",
+            "step_index": step_index,
+            "violation_count": violation_count + 1,
+            "duration_minutes": 0,
+            "message": message
+        }
+    
+    # Disable with appropriate duration
+    duration_seconds = punishment.get_duration_seconds()
+    
+    try:
+        await disable_user(panel_data, username, duration_seconds)
+        await record_user_violation(username.name, step_index, punishment.duration_minutes)
+        
+        if punishment.is_unlimited_disable():
+            message = f"🚫 User {username.name} disabled permanently (violation #{violation_count + 1})"
+        else:
+            message = f"🔒 User {username.name} disabled for {punishment.duration_minutes} minutes (violation #{violation_count + 1})"
+        
+        return {
+            "action": "disabled",
+            "step_index": step_index,
+            "violation_count": violation_count + 1,
+            "duration_minutes": punishment.duration_minutes,
+            "message": message
+        }
+    except ValueError as e:
+        return {
+            "action": "error",
+            "step_index": step_index,
+            "violation_count": violation_count,
+            "duration_minutes": 0,
+            "message": str(e)
+        }
 
 
 async def enable_user_by_status(panel_data: PanelType, username: str) -> bool:

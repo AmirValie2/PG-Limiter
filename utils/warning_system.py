@@ -51,6 +51,22 @@ async def safe_disable_user(panel_data: PanelType, user: 'UserType'):
     except Exception as e:
         logger.error(f"Failed to disable user {user.name}: {e}")
 
+
+async def safe_disable_user_with_punishment(panel_data: PanelType, user: 'UserType') -> dict:
+    """
+    Safely disable user with smart punishment system.
+    Returns punishment result dict or error dict.
+    """
+    try:
+        from utils.panel_api import disable_user_with_punishment
+        return await disable_user_with_punishment(panel_data, user)
+    except ImportError as e:
+        logger.error(f"Failed to import disable_user_with_punishment: {e}")
+        return {"action": "error", "message": str(e), "step_index": 0, "violation_count": 0, "duration_minutes": 0}
+    except Exception as e:
+        logger.error(f"Failed to disable user {user.name} with punishment: {e}")
+        return {"action": "error", "message": str(e), "step_index": 0, "violation_count": 0, "duration_minutes": 0}
+
 @dataclass
 class UserWarning:
     """
@@ -729,19 +745,42 @@ class EnhancedWarningSystem:
             await self.add_to_warning_history(username)
             
             try:
-                await safe_disable_user(panel_data, UserType(name=username, ip=[]))
+                # Use smart punishment system
+                punishment_result = await safe_disable_user_with_punishment(panel_data, UserType(name=username, ip=[]))
                 
-                await safe_send_disable_notification(
-                    f"🚫 <b>INSTANT DISABLE</b> - {time_str}\n\n"
-                    f"User: <code>{username}</code>\n"
-                    f"Active IPs: <code>{ip_count}</code>\n"
-                    f"{limit_text}"
-                    f"Trust Level: {trust_level} (<code>{warning.trust_score:.0f}</code>)\n"
-                    f"Behavior: <code>{behavior_summary}</code>\n\n"
-                    f"⚡ <b>Monitoring skipped</b> - Trust score too low (≤{self.INSTANT_DISABLE_THRESHOLD})\n"
-                    f"User disabled immediately due to clear multi-device abuse.",
-                    username
-                )
+                if punishment_result["action"] == "warning":
+                    # Just a warning, don't disable
+                    await safe_send_logs(
+                        f"⚠️ <b>WARNING (Instant)</b> - {time_str}\n\n"
+                        f"User: <code>{username}</code>\n"
+                        f"Active IPs: <code>{ip_count}</code>\n"
+                        f"{limit_text}"
+                        f"Trust Level: {trust_level} (<code>{warning.trust_score:.0f}</code>)\n"
+                        f"Behavior: <code>{behavior_summary}</code>\n\n"
+                        f"📊 Violation #{punishment_result['violation_count']} in time window\n"
+                        f"⚡ Next violation will result in disable.",
+                    )
+                    logger.warning(f"WARNING (instant): User {username} - violation #{punishment_result['violation_count']}")
+                    return "warning"
+                elif punishment_result["action"] == "disabled":
+                    duration_text = ""
+                    if punishment_result["duration_minutes"] > 0:
+                        duration_text = f"Duration: <code>{punishment_result['duration_minutes']} minutes</code>\n"
+                    else:
+                        duration_text = "Duration: <code>Until manual enable</code>\n"
+                    
+                    await safe_send_disable_notification(
+                        f"🚫 <b>INSTANT DISABLE</b> - {time_str}\n\n"
+                        f"User: <code>{username}</code>\n"
+                        f"Active IPs: <code>{ip_count}</code>\n"
+                        f"{limit_text}"
+                        f"Trust Level: {trust_level} (<code>{warning.trust_score:.0f}</code>)\n"
+                        f"Behavior: <code>{behavior_summary}</code>\n\n"
+                        f"📊 Violation #{punishment_result['violation_count']} (Step {punishment_result['step_index'] + 1})\n"
+                        f"{duration_text}"
+                        f"⚡ <b>Monitoring skipped</b> - Trust score too low (≤{self.INSTANT_DISABLE_THRESHOLD})",
+                        username
+                    )
                 
                 logger.warning(f"INSTANT DISABLE: User {username} disabled immediately (trust: {warning.trust_score:.0f})")
                 return "instant_disabled"
@@ -882,28 +921,54 @@ class EnhancedWarningSystem:
                     
                     # Check if DEVICE count exceeds limit (not just IP count)
                     if device_count > user_limit_number:
-                        # User has more persistent devices than allowed - DISABLE
+                        # User has more persistent devices than allowed - DISABLE with smart punishment
                         try:
-                            await safe_disable_user(panel_data, UserType(name=username, ip=[]))
-                            disabled_users.add(username)
+                            # Use smart punishment system
+                            punishment_result = await safe_disable_user_with_punishment(
+                                panel_data, UserType(name=username, ip=[])
+                            )
                             
                             # Add to warning history ONLY when user is actually disabled
                             # This ensures users who are monitored but found "not guilty" don't get penalized
                             await self.add_to_warning_history(username)
                             
-                            await safe_send_disable_notification(
-                                f"🚫 <b>USER DISABLED</b> - {time_str}\n\n"
-                                f"User: <code>{username}</code>\n"
-                                f"Confirmed Devices: <code>{device_count}</code> (active 2+ min)\n"
-                                f"Current IPs: <code>{len(current_ips)}</code>\n"
-                                f"User limit: <code>{user_limit_number}</code>\n"
-                                f"Trust Level: {trust_level} (<code>{trust_score:.0f}</code>)\n\n"
-                                f"📊 IP Activity:\n<code>{activity_summary}</code>\n\n"
-                                f"User exceeded device limit after 3-minute monitoring.",
-                                username
-                            )
-                            
-                            logger.warning(f"Disabled user {username}: {device_count} devices (limit: {user_limit_number})")
+                            if punishment_result["action"] == "warning":
+                                # Just a warning - don't count as disabled
+                                await safe_send_logs(
+                                    f"⚠️ <b>WARNING</b> - {time_str}\n\n"
+                                    f"User: <code>{username}</code>\n"
+                                    f"Confirmed Devices: <code>{device_count}</code> (active 2+ min)\n"
+                                    f"User limit: <code>{user_limit_number}</code>\n"
+                                    f"Trust Level: {trust_level} (<code>{trust_score:.0f}</code>)\n\n"
+                                    f"📊 Violation #{punishment_result['violation_count']} in time window\n"
+                                    f"⚡ Next violation will result in disable."
+                                )
+                                logger.warning(f"WARNING: User {username} - {device_count} devices (limit: {user_limit_number}) - violation #{punishment_result['violation_count']}")
+                            elif punishment_result["action"] == "disabled":
+                                disabled_users.add(username)
+                                
+                                duration_text = ""
+                                if punishment_result["duration_minutes"] > 0:
+                                    duration_text = f"Duration: <code>{punishment_result['duration_minutes']} minutes</code>\n"
+                                else:
+                                    duration_text = "Duration: <code>Until manual enable</code>\n"
+                                
+                                await safe_send_disable_notification(
+                                    f"🚫 <b>USER DISABLED</b> - {time_str}\n\n"
+                                    f"User: <code>{username}</code>\n"
+                                    f"Confirmed Devices: <code>{device_count}</code> (active 2+ min)\n"
+                                    f"Current IPs: <code>{len(current_ips)}</code>\n"
+                                    f"User limit: <code>{user_limit_number}</code>\n"
+                                    f"Trust Level: {trust_level} (<code>{trust_score:.0f}</code>)\n\n"
+                                    f"📊 Violation #{punishment_result['violation_count']} (Step {punishment_result['step_index'] + 1})\n"
+                                    f"{duration_text}"
+                                    f"📊 IP Activity:\n<code>{activity_summary}</code>",
+                                    username
+                                )
+                                
+                                logger.warning(f"Disabled user {username}: {device_count} devices (limit: {user_limit_number}) - step {punishment_result['step_index'] + 1}")
+                            else:
+                                logger.error(f"Punishment action error for {username}: {punishment_result['message']}")
                             
                         except Exception as e:
                             logger.error(f"Failed to disable user {username}: {e}")
