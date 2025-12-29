@@ -96,32 +96,32 @@ class ISPDetector:
             
             session = await self._get_session()
             async with session.get(url, headers=headers, timeout=10) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        # Prefer as_domain, fallback to as_name, then org
-                        isp_name = data.get("as_domain") or data.get("as_name") or data.get("org", "Unknown ISP")
-                        logger.info(f"ISP detected for {ip}: {isp_name}")
-                        isp_info = {
-                            "ip": ip,
-                            "isp": isp_name,
-                            "country": data.get("country", "Unknown"),
-                            "city": data.get("city", "Unknown"),
-                            "region": data.get("region", "Unknown")
-                        }
-                        self.cache[ip] = isp_info
-                        self.last_request_time = asyncio.get_event_loop().time()
-                        return isp_info
-                    elif response.status == 429:
-                        # Rate limited - set flag and return default
-                        self.rate_limited = True
-                        logger.warning(f"ISP detection rate limited for {ip}")
-                    elif response.status == 403:
-                        # Forbidden - try fallback API
-                        logger.warning(f"ipinfo.io returned 403 for {ip}, trying fallback API...")
-                        return await self._get_isp_fallback(ip)
-                    else:
-                        response_text = await response.text()
-                        logger.warning(f"Failed to get ISP info for {ip}: HTTP {response.status} - {response_text}")
+                if response.status == 200:
+                    data = await response.json()
+                    # Prefer as_domain, fallback to as_name, then org
+                    isp_name = data.get("as_domain") or data.get("as_name") or data.get("org", "Unknown ISP")
+                    logger.info(f"ISP detected for {ip}: {isp_name}")
+                    isp_info = {
+                        "ip": ip,
+                        "isp": isp_name,
+                        "country": data.get("country", "Unknown"),
+                        "city": data.get("city", "Unknown"),
+                        "region": data.get("region", "Unknown")
+                    }
+                    self.cache[ip] = isp_info
+                    self.last_request_time = asyncio.get_event_loop().time()
+                    return isp_info
+                elif response.status == 429:
+                    # Rate limited - set flag and return default
+                    self.rate_limited = True
+                    logger.warning(f"ISP detection rate limited for {ip}")
+                elif response.status == 403:
+                    # Forbidden - try fallback API
+                    logger.warning(f"ipinfo.io returned 403 for {ip}, trying fallback API...")
+                    return await self._get_isp_fallback(ip)
+                else:
+                    response_text = await response.text()
+                    logger.warning(f"Failed to get ISP info for {ip}: HTTP {response.status} - {response_text}")
                         
         except asyncio.TimeoutError:
             logger.error(f"Timeout getting ISP info for {ip}")
@@ -223,7 +223,8 @@ class ISPDetector:
                     await asyncio.sleep(0.5)
         
         # Build result from cache
-        default_info = lambda ip: {"ip": ip, "isp": "Unknown ISP", "country": "Unknown", "city": "Unknown", "region": "Unknown"}
+        def default_info(ip_addr):
+            return {"ip": ip_addr, "isp": "Unknown ISP", "country": "Unknown", "city": "Unknown", "region": "Unknown"}
         return {ip: self.cache.get(ip, default_info(ip)) for ip in ips}
     
     def format_ip_with_isp(self, ip: str, isp_info: Dict[str, str]) -> str:

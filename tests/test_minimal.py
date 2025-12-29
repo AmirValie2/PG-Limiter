@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Dict, Optional, Set
 from dataclasses import dataclass
 
-# Minimal UserWarning class for testing
+# Minimal TestUserWarning class for testing (avoiding conflict with built-in UserWarning)
 @dataclass
-class UserWarning:
+class TestUserWarning:
     """
     Represents a warning for a user who exceeded limits
     """

@@ -1,0 +1,201 @@
+[MAIN]
+# Analyse import fallback blocks. This can be used to support optional dependencies.
+analyse-fallback-blocks=yes
+
+# Use multiple processes to speed up Pylint.
+jobs=4
+
+# Pickle collected data for later comparisons.
+persistent=yes
+
+# List of plugins (as comma separated values of python modules names) to load
+load-plugins=
+
+[MESSAGES CONTROL]
+# Disable specific messages
+disable=
+    # Import errors for optional dependencies (fastapi, typer, uvicorn, etc.)
+    import-error,
+    # Trailing whitespace - cosmetic, auto-fixable
+    trailing-whitespace,
+    # Line too long - modern screens can handle longer lines
+    line-too-long,
+    # Missing docstrings for simple classes/functions - handled case by case
+    missing-class-docstring,
+    missing-function-docstring,
+    # Too few public methods - Pydantic/dataclass models don't need many
+    too-few-public-methods,
+    # Import outside toplevel - necessary for optional dependencies
+    import-outside-toplevel,
+    # Wrong import order/position - handled by isort if needed
+    wrong-import-order,
+    wrong-import-position,
+    # Logging f-string interpolation - performance is negligible for this app
+    logging-fstring-interpolation,
+    # Broad exception caught - sometimes needed for robustness
+    broad-exception-caught,
+    # f-string without placeholders - valid for clarity
+    f-string-without-interpolation,
+    # Duplicate code - some duplication is acceptable in tests
+    duplicate-code,
+    # Cyclic import - hard to avoid in complex projects
+    cyclic-import,
+    # Unused arguments - often required for callbacks/handlers
+    unused-argument,
+    # Redefining outer name - common pattern in nested functions
+    redefined-outer-name,
+    # Global statement - sometimes necessary
+    global-statement,
+    global-variable-not-assigned,
+    # Invalid name for constants at module level
+    invalid-name,
+    # Too many arguments/locals/statements - flexible for complex functions
+    too-many-arguments,
+    too-many-locals,
+    too-many-statements,
+    too-many-branches,
+    too-many-return-statements,
+    # Too many positional arguments - flexible for complex functions
+    too-many-positional-arguments,
+    # Too many instance attributes - dataclasses may need many
+    too-many-instance-attributes,
+    # Too many nested blocks - sometimes needed for complex logic
+    too-many-nested-blocks,
+    # Logging format errors - using f-strings is acceptable
+    logging-too-many-args,
+    # No member errors - may be false positives for dynamic attributes
+    no-member,
+    # No name in module - may be false positives
+    no-name-in-module,
+    # Redefining built-in - acceptable for domain-specific names
+    redefined-builtin,
+    # Consider using dict items - style preference
+    consider-using-dict-items,
+    # Chained comparison - style preference  
+    chained-comparison,
+    # Unnecessary elif after return - style preference
+    no-else-return,
+    # Bare except - sometimes needed
+    bare-except,
+    # Consider using with - not always applicable
+    consider-using-with,
+    # Unspecified encoding - Python 3 defaults to UTF-8
+    unspecified-encoding,
+    # Unused import - handled by other tools
+    unused-import,
+    # Unused variable - sometimes needed for unpacking
+    unused-variable,
+    # Reimported - handled by import organization
+    reimported,
+    # Raise missing from - style preference
+    raise-missing-from,
+    # Use a sequence type for iteration - style preference
+    consider-using-in,
+    # Use sequence/dict literal - style preference
+    use-dict-literal,
+    use-list-literal,
+    # Consider using ternary - readability preference
+    consider-using-ternary,
+    # Simplifiable if expression
+    simplifiable-if-expression,
+    # Consider using generator
+    consider-using-generator,
+    # Missing module docstring
+    missing-module-docstring,
+
+[FORMAT]
+# Maximum number of characters on a single line.
+max-line-length=120
+
+# Maximum number of lines in a module
+max-module-lines=5000
+
+[DESIGN]
+# Maximum number of arguments for function / method
+max-args=10
+
+# Maximum number of attributes for a class
+max-attributes=20
+
+# Maximum number of boolean expressions in an if statement
+max-bool-expr=6
+
+# Maximum number of branch for function / method body
+max-branches=20
+
+# Maximum number of locals for function / method body
+max-locals=25
+
+# Maximum number of parents for a class
+max-parents=10
+
+# Maximum number of public methods for a class
+max-public-methods=30
+
+# Maximum number of return / yield for function / method body
+max-returns=10
+
+# Maximum number of statements in function / method body
+max-statements=100
+
+# Minimum number of public methods for a class
+min-public-methods=0
+
+[SIMILARITIES]
+# Minimum lines number of a similarity.
+min-similarity-lines=10
+
+# Ignore imports when computing similarities.
+ignore-imports=yes
+
+# Ignore function signatures when computing similarities.
+ignore-signatures=yes
+
+[TYPECHECK]
+# List of decorators that produce context managers
+contextmanager-decorators=contextlib.contextmanager
+
+# List of members which are set dynamically and missed by pylint inference system
+generated-members=
+
+[VARIABLES]
+# A regular expression matching the name of dummy variables
+dummy-variables-rgx=_+$|(_[a-zA-Z0-9_]*[a-zA-Z0-9]+?$)|dummy|^ignored_|^unused_
+
+# Tells whether we should check for unused import in __init__ files.
+init-import=no
+
+[LOGGING]
+# Format style used to check logging format string
+logging-format-style=new
+
+[BASIC]
+# Good variable names which should always be accepted
+good-names=i,j,k,n,x,y,z,ip,id,tg,ws,db,_
+
+# Include a hint for the correct naming format with invalid-name
+include-naming-hint=yes
+
+# Naming style matching correct argument names
+argument-naming-style=snake_case
+
+# Naming style matching correct attribute names
+attr-naming-style=snake_case
+
+# Naming style matching correct class names
+class-naming-style=PascalCase
+
+# Naming style matching correct constant names
+const-naming-style=any
+
+# Naming style matching correct function names
+function-naming-style=snake_case
+
+# Naming style matching correct method names
+method-naming-style=snake_case
+
+# Naming style matching correct module names
+module-naming-style=snake_case
+
+# Naming style matching correct variable names
+variable-naming-style=snake_case
