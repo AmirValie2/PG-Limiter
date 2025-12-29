@@ -27,11 +27,11 @@
     "enabled": true,
     "window_hours": 72,
     "steps": [
-      {"type": "warning", "duration": 0},
-      {"type": "disable", "duration": 15},
-      {"type": "disable", "duration": 60},
-      {"type": "disable", "duration": 240},
-      {"type": "disable", "duration": 0}
+      { "type": "warning", "duration": 0 },
+      { "type": "disable", "duration": 15 },
+      { "type": "disable", "duration": 60 },
+      { "type": "disable", "duration": 240 },
+      { "type": "disable", "duration": 0 }
     ]
   }
 }

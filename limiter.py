@@ -28,7 +28,7 @@ from utils.panel_api import (
 from utils.read_config import read_config
 from utils.types import PanelType
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 
 parser = argparse.ArgumentParser(
     description="Limiter - IP connection limiter for PasarGuard panel"

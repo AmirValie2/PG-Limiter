@@ -1113,7 +1113,15 @@ async def help_command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
 /user_violations - Check user violations
 /clear_user_violations - Clear user history
 
-<b>📊 Reports:</b>
+<b>� Group Filter:</b>
+/group_filter_status - Show filter config
+/group_filter_toggle - Enable/disable filter
+/group_filter_mode - Set include/exclude
+/group_filter_set - Set group IDs
+/group_filter_add - Add group
+/group_filter_remove - Remove group
+
+<b>�📊 Reports:</b>
 /connection_report - Connection analysis
 /node_usage - Node usage stats
 /multi_device_users - Multi-device detection
@@ -1904,6 +1912,282 @@ async def clear_user_violations(update: Update, context: ContextTypes.DEFAULT_TY
                 text=f"✅ Cleared violation history for <code>{username}</code>"
             )
         
+    except Exception as e:
+        await update.message.reply_html(text=f"❌ Error: {str(e)}")
+    
+    return ConversationHandler.END
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GROUP FILTER COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def group_filter_status(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    """Show the current group filter configuration."""
+    check = await check_admin_privilege(update)
+    if check:
+        return check
+    
+    try:
+        from utils.user_group_filter import get_filter_status_text, get_all_groups
+        from utils.types import PanelType
+        
+        config_data = await read_config()
+        
+        # Get panel data for group lookup
+        panel_config = config_data.get("panel", {})
+        panel_data = PanelType(
+            panel_config.get("username", ""),
+            panel_config.get("password", ""),
+            panel_config.get("domain", "")
+        )
+        
+        # Get all groups for name lookup
+        groups = await get_all_groups(panel_data)
+        
+        # Get filter status
+        status_text = get_filter_status_text(config_data, groups)
+        
+        # Build groups list
+        groups_list = []
+        for group in groups:
+            gid = group.get("id", "?")
+            name = group.get("name", "Unknown")
+            groups_list.append(f"  • <code>{gid}</code> - {name}")
+        
+        groups_display = "\n".join(groups_list) if groups_list else "  No groups found"
+        
+        message = (
+            f"🔍 <b>Group Filter Status</b>\n\n"
+            f"{status_text}\n\n"
+            f"<b>Available Groups:</b>\n{groups_display}\n\n"
+            f"<b>Commands:</b>\n"
+            f"/group_filter_toggle - Enable/disable\n"
+            f"/group_filter_mode - Set include/exclude\n"
+            f"/group_filter_set - Set groups\n"
+            f"/group_filter_add - Add group\n"
+            f"/group_filter_remove - Remove group"
+        )
+        
+        await update.message.reply_html(text=message)
+        
+    except Exception as e:
+        await update.message.reply_html(text=f"❌ Error: {str(e)}")
+    
+    return ConversationHandler.END
+
+
+async def group_filter_toggle(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    """Toggle group filter on/off."""
+    check = await check_admin_privilege(update)
+    if check:
+        return check
+    
+    try:
+        config_data = await read_config()
+        
+        if "group_filter" not in config_data:
+            config_data["group_filter"] = {"enabled": True, "mode": "include", "group_ids": []}
+        
+        current_state = config_data["group_filter"].get("enabled", False)
+        config_data["group_filter"]["enabled"] = not current_state
+        
+        await write_json_file(config_data)
+        
+        new_state = "✅ Enabled" if not current_state else "❌ Disabled"
+        await update.message.reply_html(
+            text=f"🔍 Group filter is now: {new_state}"
+        )
+        
+    except Exception as e:
+        await update.message.reply_html(text=f"❌ Error: {str(e)}")
+    
+    return ConversationHandler.END
+
+
+async def group_filter_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set group filter mode (include/exclude)."""
+    check = await check_admin_privilege(update)
+    if check:
+        return check
+    
+    if context.args:
+        mode = context.args[0].lower()
+        if mode not in ["include", "exclude"]:
+            await update.message.reply_html(
+                text="❌ Invalid mode. Use <code>include</code> or <code>exclude</code>"
+            )
+            return ConversationHandler.END
+        
+        try:
+            config_data = await read_config()
+            
+            if "group_filter" not in config_data:
+                config_data["group_filter"] = {"enabled": False, "mode": mode, "group_ids": []}
+            else:
+                config_data["group_filter"]["mode"] = mode
+            
+            await write_json_file(config_data)
+            
+            if mode == "include":
+                desc = "Only users in specified groups will be monitored"
+            else:
+                desc = "Users in specified groups will be whitelisted"
+            
+            await update.message.reply_html(
+                text=f"✅ Group filter mode set to: <code>{mode}</code>\n{desc}"
+            )
+            
+        except Exception as e:
+            await update.message.reply_html(text=f"❌ Error: {str(e)}")
+        
+        return ConversationHandler.END
+    
+    await update.message.reply_html(
+        text="🔍 <b>Set Group Filter Mode</b>\n\n"
+             "<code>/group_filter_mode include</code>\n"
+             "  → Only users in specified groups are monitored\n\n"
+             "<code>/group_filter_mode exclude</code>\n"
+             "  → Users in specified groups are whitelisted (not limited)"
+    )
+    return ConversationHandler.END
+
+
+async def group_filter_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set the list of group IDs for filtering."""
+    check = await check_admin_privilege(update)
+    if check:
+        return check
+    
+    if context.args:
+        try:
+            # Parse group IDs from arguments
+            group_ids = []
+            for arg in context.args:
+                # Support comma-separated and space-separated
+                for gid in arg.split(","):
+                    gid = gid.strip()
+                    if gid:
+                        group_ids.append(int(gid))
+            
+            config_data = await read_config()
+            
+            if "group_filter" not in config_data:
+                config_data["group_filter"] = {"enabled": False, "mode": "include", "group_ids": group_ids}
+            else:
+                config_data["group_filter"]["group_ids"] = group_ids
+            
+            await write_json_file(config_data)
+            
+            await update.message.reply_html(
+                text=f"✅ Group filter set to IDs: <code>{group_ids}</code>"
+            )
+            
+        except ValueError:
+            await update.message.reply_html(
+                text="❌ Invalid group ID. Please provide numeric IDs."
+            )
+        except Exception as e:
+            await update.message.reply_html(text=f"❌ Error: {str(e)}")
+        
+        return ConversationHandler.END
+    
+    await update.message.reply_html(
+        text="🔍 <b>Set Group Filter Groups</b>\n\n"
+             "Usage: <code>/group_filter_set 1 2 3</code>\n"
+             "Or: <code>/group_filter_set 1,2,3</code>\n\n"
+             "Use /group_filter_status to see available groups."
+    )
+    return ConversationHandler.END
+
+
+async def group_filter_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add a group ID to the filter."""
+    check = await check_admin_privilege(update)
+    if check:
+        return check
+    
+    if not context.args:
+        await update.message.reply_html(
+            text="❌ Please provide a group ID.\n"
+                 "Example: <code>/group_filter_add 5</code>"
+        )
+        return ConversationHandler.END
+    
+    try:
+        group_id = int(context.args[0])
+        
+        config_data = await read_config()
+        
+        if "group_filter" not in config_data:
+            config_data["group_filter"] = {"enabled": False, "mode": "include", "group_ids": [group_id]}
+        else:
+            current_ids = config_data["group_filter"].get("group_ids", [])
+            if group_id not in current_ids:
+                current_ids.append(group_id)
+                config_data["group_filter"]["group_ids"] = current_ids
+            else:
+                await update.message.reply_html(
+                    text=f"ℹ️ Group ID <code>{group_id}</code> is already in the filter."
+                )
+                return ConversationHandler.END
+        
+        await write_json_file(config_data)
+        
+        await update.message.reply_html(
+            text=f"✅ Added group ID <code>{group_id}</code> to filter.\n"
+                 f"Current groups: <code>{config_data['group_filter']['group_ids']}</code>"
+        )
+        
+    except ValueError:
+        await update.message.reply_html(text="❌ Invalid group ID. Please provide a number.")
+    except Exception as e:
+        await update.message.reply_html(text=f"❌ Error: {str(e)}")
+    
+    return ConversationHandler.END
+
+
+async def group_filter_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove a group ID from the filter."""
+    check = await check_admin_privilege(update)
+    if check:
+        return check
+    
+    if not context.args:
+        await update.message.reply_html(
+            text="❌ Please provide a group ID.\n"
+                 "Example: <code>/group_filter_remove 5</code>"
+        )
+        return ConversationHandler.END
+    
+    try:
+        group_id = int(context.args[0])
+        
+        config_data = await read_config()
+        
+        if "group_filter" not in config_data:
+            await update.message.reply_html(
+                text="❌ No group filter configured."
+            )
+            return ConversationHandler.END
+        
+        current_ids = config_data["group_filter"].get("group_ids", [])
+        if group_id in current_ids:
+            current_ids.remove(group_id)
+            config_data["group_filter"]["group_ids"] = current_ids
+            await write_json_file(config_data)
+            
+            await update.message.reply_html(
+                text=f"✅ Removed group ID <code>{group_id}</code> from filter.\n"
+                     f"Remaining groups: <code>{current_ids}</code>"
+            )
+        else:
+            await update.message.reply_html(
+                text=f"ℹ️ Group ID <code>{group_id}</code> is not in the filter."
+            )
+        
+    except ValueError:
+        await update.message.reply_html(text="❌ Invalid group ID. Please provide a number.")
     except Exception as e:
         await update.message.reply_html(text=f"❌ Error: {str(e)}")
     
@@ -3656,6 +3940,14 @@ application.add_handler(CommandHandler("punishment_set_window", punishment_set_w
 application.add_handler(CommandHandler("punishment_set_steps", punishment_set_steps))
 application.add_handler(CommandHandler("user_violations", user_violations))
 application.add_handler(CommandHandler("clear_user_violations", clear_user_violations))
+
+# Group filter commands
+application.add_handler(CommandHandler("group_filter_status", group_filter_status))
+application.add_handler(CommandHandler("group_filter_toggle", group_filter_toggle))
+application.add_handler(CommandHandler("group_filter_mode", group_filter_mode))
+application.add_handler(CommandHandler("group_filter_set", group_filter_set))
+application.add_handler(CommandHandler("group_filter_add", group_filter_add))
+application.add_handler(CommandHandler("group_filter_remove", group_filter_remove))
 
 application.add_handler(CommandHandler("connection_report", connection_report_command))
 application.add_handler(CommandHandler("node_usage", node_usage_report_command))

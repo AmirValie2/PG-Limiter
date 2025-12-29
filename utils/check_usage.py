@@ -16,6 +16,7 @@ from utils.types import PanelType, UserType, EnhancedUserInfo
 from utils.warning_system import EnhancedWarningSystem
 from utils.isp_detector import ISPDetector
 from utils.ip_history_tracker import ip_history_tracker
+from utils.user_group_filter import should_limit_user, get_filter_status_text
 
 ACTIVE_USERS: dict[str, UserType] | dict = {}
 
@@ -470,8 +471,17 @@ async def check_users_usage(panel_data: PanelType):
     )
     
     # Check current violations for ALL users (not just those in all_users_log)
+    # Track users skipped due to group filter
+    group_filtered_users = set()
+    
     for user_name, unique_ips in all_users_actual_ips.items():
         if user_name not in except_users and user_name not in disabled_users:
+            # Check group filter - skip users not in monitored groups
+            should_limit, skip_reason = await should_limit_user(panel_data, user_name, config_data)
+            if not should_limit:
+                group_filtered_users.add(user_name)
+                continue
+            
             user_limit_number = int(special_limit.get(user_name, limit_number))
             
             if len(unique_ips) > user_limit_number:
@@ -503,6 +513,10 @@ async def check_users_usage(panel_data: PanelType):
                             f"Warning issued - monitoring for 3 minutes."
                         )
                         logger.warning(message)
+    
+    # Log group filter stats if any users were filtered
+    if group_filtered_users:
+        logger.debug(f"Group filter: {len(group_filtered_users)} users skipped")
     
     # Clean up expired warnings
     await warning_system.cleanup_expired_warnings()
