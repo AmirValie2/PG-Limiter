@@ -176,6 +176,7 @@ async def read_config(check_required_elements: bool = False) -> Dict[str, Any]:
     # Group filter settings
     config["group_filter"] = {
         "enabled": db_config.get("group_filter_enabled", "false").lower() == "true",
+        "mode": db_config.get("group_filter_mode", "include"),
         "group_ids": [],
     }
     group_ids_str = db_config.get("group_filter_ids", "")
@@ -186,6 +187,18 @@ async def read_config(check_required_elements: bool = False) -> Dict[str, Any]:
             ]
         except ValueError:
             pass
+    
+    # Admin filter settings
+    config["admin_filter"] = {
+        "enabled": db_config.get("admin_filter_enabled", "false").lower() == "true",
+        "mode": db_config.get("admin_filter_mode", "include"),
+        "admin_usernames": [],
+    }
+    admin_usernames_str = db_config.get("admin_filter_usernames", "")
+    if admin_usernames_str:
+        config["admin_filter"]["admin_usernames"] = [
+            x.strip() for x in admin_usernames_str.split(",") if x.strip()
+        ]
     
     # Validate required elements
     if check_required_elements:

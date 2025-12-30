@@ -184,6 +184,12 @@ class CallbackData:
     GROUP_FILTER_MODE_INCLUDE = "group_filter_mode_include"
     GROUP_FILTER_MODE_EXCLUDE = "group_filter_mode_exclude"
     
+    # Admin filter
+    ADMIN_FILTER_MENU = "admin_filter_menu"
+    ADMIN_FILTER_TOGGLE = "admin_filter_toggle"
+    ADMIN_FILTER_MODE_INCLUDE = "admin_filter_mode_include"
+    ADMIN_FILTER_MODE_EXCLUDE = "admin_filter_mode_exclude"
+    
     # Cleanup
     CLEANUP_DELETED_USERS = "cleanup_deleted_users"
     
@@ -240,7 +246,7 @@ def create_settings_menu_keyboard():
     """Create the settings menu inline keyboard."""
     keyboard = [
         [
-            InlineKeyboardButton("� IPInfo Token", callback_data=CallbackData.SET_IPINFO),
+            InlineKeyboardButton("🔑 IPInfo Token", callback_data=CallbackData.SET_IPINFO),
             InlineKeyboardButton("🚫 Disable Method", callback_data=CallbackData.DISABLE_METHOD_MENU),
         ],
         [
@@ -250,6 +256,9 @@ def create_settings_menu_keyboard():
         [
             InlineKeyboardButton("⚖️ Punishment", callback_data=CallbackData.PUNISHMENT_MENU),
             InlineKeyboardButton("🔍 Group Filter", callback_data=CallbackData.GROUP_FILTER_MENU),
+        ],
+        [
+            InlineKeyboardButton("👤 Admin Filter", callback_data=CallbackData.ADMIN_FILTER_MENU),
         ],
         [InlineKeyboardButton("« Back to Main Menu", callback_data=CallbackData.BACK_MAIN)],
     ]
@@ -404,6 +413,31 @@ def create_group_filter_menu_keyboard(enabled: bool = False, mode: str = "includ
             InlineKeyboardButton("📤 Exclude", callback_data=CallbackData.GROUP_FILTER_MODE_EXCLUDE),
         ],
         [InlineKeyboardButton(f"📋 Groups: {len(group_ids)} configured", callback_data="group_filter_view_groups")],
+        [InlineKeyboardButton("« Back to Settings", callback_data=CallbackData.SETTINGS_MENU)],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def create_admin_filter_menu_keyboard(enabled: bool = False, mode: str = "include", admin_usernames: list = None):
+    """Create admin filter menu keyboard."""
+    if admin_usernames is None:
+        admin_usernames = []
+    
+    toggle_text = "❌ Disable" if enabled else "✅ Enable"
+    status_emoji = "🟢" if enabled else "🔴"
+    mode_emoji = "📥" if mode == "include" else "📤"
+    
+    keyboard = [
+        [InlineKeyboardButton(f"{status_emoji} Status: {'Enabled' if enabled else 'Disabled'}", callback_data="admin_filter_info")],
+        [InlineKeyboardButton(toggle_text, callback_data=CallbackData.ADMIN_FILTER_TOGGLE)],
+        [
+            InlineKeyboardButton(f"{mode_emoji} Mode: {mode.title()}", callback_data="admin_filter_mode_menu"),
+        ],
+        [
+            InlineKeyboardButton("📥 Include", callback_data=CallbackData.ADMIN_FILTER_MODE_INCLUDE),
+            InlineKeyboardButton("📤 Exclude", callback_data=CallbackData.ADMIN_FILTER_MODE_EXCLUDE),
+        ],
+        [InlineKeyboardButton(f"👤 Admins: {len(admin_usernames)} configured", callback_data="admin_filter_view_admins")],
         [InlineKeyboardButton("« Back to Settings", callback_data=CallbackData.SETTINGS_MENU)],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -2393,6 +2427,265 @@ async def group_filter_remove(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# ADMIN FILTER COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def admin_filter_status(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    """Show the current admin filter configuration."""
+    check = await check_admin_privilege(update)
+    if check:
+        return check
+    
+    try:
+        from utils.admin_filter import get_admin_filter_status_text, get_all_admins
+        from utils.types import PanelType
+        
+        config_data = await read_config()
+        
+        # Get panel data for admin lookup
+        panel_config = config_data.get("panel", {})
+        panel_data = PanelType(
+            panel_config.get("username", ""),
+            panel_config.get("password", ""),
+            panel_config.get("domain", "")
+        )
+        
+        # Get all admins for display
+        admins = await get_all_admins(panel_data)
+        
+        # Get filter status
+        status_text = get_admin_filter_status_text(config_data, admins)
+        
+        # Build admins list
+        admins_list = []
+        for admin in admins:
+            username = admin.get("username", "?")
+            is_sudo = "👑" if admin.get("is_sudo", False) else ""
+            is_disabled = "🔒" if admin.get("is_disabled", False) else ""
+            admins_list.append(f"  • <code>{username}</code> {is_sudo}{is_disabled}")
+        
+        admins_display = "\n".join(admins_list) if admins_list else "  No admins found"
+        
+        message = (
+            f"👤 <b>Admin Filter Status</b>\n\n"
+            f"{status_text}\n\n"
+            f"<b>Available Admins:</b>\n{admins_display}\n\n"
+            f"<b>Commands:</b>\n"
+            f"/admin_filter_toggle - Enable/disable\n"
+            f"/admin_filter_mode - Set include/exclude\n"
+            f"/admin_filter_set - Set admin usernames\n"
+            f"/admin_filter_add - Add admin\n"
+            f"/admin_filter_remove - Remove admin"
+        )
+        
+        await update.message.reply_html(text=message)
+        
+    except Exception as e:
+        await update.message.reply_html(text=f"❌ Error: {str(e)}")
+    
+    return ConversationHandler.END
+
+
+async def admin_filter_toggle(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    """Toggle admin filter on/off."""
+    check = await check_admin_privilege(update)
+    if check:
+        return check
+    
+    try:
+        from utils.read_config import save_config_value, invalidate_config_cache
+        
+        config_data = await read_config()
+        filter_config = config_data.get("admin_filter", {})
+        current_state = filter_config.get("enabled", False)
+        new_state = not current_state
+        
+        await save_config_value("admin_filter_enabled", "true" if new_state else "false")
+        invalidate_config_cache()
+        
+        status = "✅ Enabled" if new_state else "❌ Disabled"
+        await update.message.reply_html(
+            text=f"👤 Admin filter is now: {status}"
+        )
+        
+    except Exception as e:
+        await update.message.reply_html(text=f"❌ Error: {str(e)}")
+    
+    return ConversationHandler.END
+
+
+async def admin_filter_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set admin filter mode (include/exclude)."""
+    check = await check_admin_privilege(update)
+    if check:
+        return check
+    
+    if context.args:
+        mode = context.args[0].lower()
+        if mode not in ["include", "exclude"]:
+            await update.message.reply_html(
+                text="❌ Invalid mode. Use <code>include</code> or <code>exclude</code>"
+            )
+            return ConversationHandler.END
+        
+        try:
+            from utils.read_config import save_config_value, invalidate_config_cache
+            
+            await save_config_value("admin_filter_mode", mode)
+            invalidate_config_cache()
+            
+            if mode == "include":
+                desc = "Only users of specified admins will be monitored"
+            else:
+                desc = "Users of specified admins will be whitelisted"
+            
+            await update.message.reply_html(
+                text=f"✅ Admin filter mode set to: <code>{mode}</code>\n{desc}"
+            )
+            
+        except Exception as e:
+            await update.message.reply_html(text=f"❌ Error: {str(e)}")
+        
+        return ConversationHandler.END
+    
+    await update.message.reply_html(
+        text="👤 <b>Set Admin Filter Mode</b>\n\n"
+             "<code>/admin_filter_mode include</code>\n"
+             "  → Only users of specified admins are monitored\n\n"
+             "<code>/admin_filter_mode exclude</code>\n"
+             "  → Users of specified admins are whitelisted (not limited)"
+    )
+    return ConversationHandler.END
+
+
+async def admin_filter_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set the list of admin usernames for filtering."""
+    check = await check_admin_privilege(update)
+    if check:
+        return check
+    
+    if context.args:
+        try:
+            from utils.read_config import save_config_value, invalidate_config_cache
+            
+            # Parse admin usernames from arguments
+            admin_usernames = []
+            for arg in context.args:
+                # Support comma-separated and space-separated
+                for username in arg.split(","):
+                    username = username.strip()
+                    if username:
+                        admin_usernames.append(username)
+            
+            # Save as comma-separated string
+            await save_config_value("admin_filter_usernames", ",".join(admin_usernames))
+            invalidate_config_cache()
+            
+            await update.message.reply_html(
+                text=f"✅ Admin filter set to: <code>{admin_usernames}</code>"
+            )
+            
+        except Exception as e:
+            await update.message.reply_html(text=f"❌ Error: {str(e)}")
+        
+        return ConversationHandler.END
+    
+    await update.message.reply_html(
+        text="👤 <b>Set Admin Filter Admins</b>\n\n"
+             "Usage: <code>/admin_filter_set admin1 admin2</code>\n"
+             "Or: <code>/admin_filter_set admin1,admin2</code>\n\n"
+             "Use /admin_filter_status to see available admins."
+    )
+    return ConversationHandler.END
+
+
+async def admin_filter_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add an admin username to the filter."""
+    check = await check_admin_privilege(update)
+    if check:
+        return check
+    
+    if not context.args:
+        await update.message.reply_html(
+            text="❌ Please provide an admin username.\n"
+                 "Example: <code>/admin_filter_add admin1</code>"
+        )
+        return ConversationHandler.END
+    
+    try:
+        from utils.read_config import save_config_value, invalidate_config_cache
+        
+        admin_username = context.args[0].strip()
+        
+        config_data = await read_config()
+        filter_config = config_data.get("admin_filter", {})
+        current_admins = filter_config.get("admin_usernames", [])
+        
+        if admin_username in current_admins:
+            await update.message.reply_html(
+                text=f"ℹ️ Admin <code>{admin_username}</code> is already in the filter."
+            )
+            return ConversationHandler.END
+        
+        current_admins.append(admin_username)
+        await save_config_value("admin_filter_usernames", ",".join(current_admins))
+        invalidate_config_cache()
+        
+        await update.message.reply_html(
+            text=f"✅ Added admin <code>{admin_username}</code> to filter.\n"
+                 f"Current admins: <code>{current_admins}</code>"
+        )
+        
+    except Exception as e:
+        await update.message.reply_html(text=f"❌ Error: {str(e)}")
+    
+    return ConversationHandler.END
+
+
+async def admin_filter_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove an admin username from the filter."""
+    check = await check_admin_privilege(update)
+    if check:
+        return check
+    
+    if not context.args:
+        await update.message.reply_html(
+            text="❌ Please provide an admin username.\n"
+                 "Example: <code>/admin_filter_remove admin1</code>"
+        )
+        return ConversationHandler.END
+    
+    try:
+        from utils.read_config import save_config_value, invalidate_config_cache
+        
+        admin_username = context.args[0].strip()
+        
+        config_data = await read_config()
+        filter_config = config_data.get("admin_filter", {})
+        current_admins = filter_config.get("admin_usernames", [])
+        
+        if admin_username not in current_admins:
+            await update.message.reply_html(
+                text=f"ℹ️ Admin <code>{admin_username}</code> is not in the filter."
+            )
+            return ConversationHandler.END
+        
+        current_admins.remove(admin_username)
+        await save_config_value("admin_filter_usernames", ",".join(current_admins))
+        invalidate_config_cache()
+        
+        await update.message.reply_html(
+            text=f"✅ Removed admin <code>{admin_username}</code> from filter.\n"
+                 f"Remaining admins: <code>{current_admins}</code>"
+        )
+        
+    except Exception as e:
+        await update.message.reply_html(text=f"❌ Error: {str(e)}")
+    
+    return ConversationHandler.END
+
+
 async def connection_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Generate and send connection analysis report."""
     check = await check_admin_privilege(update)
@@ -3426,6 +3719,165 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.answer("Toggle the filter with the button below", show_alert=False)
         return
     
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADMIN FILTER CALLBACKS
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    # Admin filter menu
+    if data == CallbackData.ADMIN_FILTER_MENU:
+        try:
+            config_data = await read_config()
+            filter_config = config_data.get("admin_filter", {})
+            enabled = filter_config.get("enabled", False)
+            mode = filter_config.get("mode", "include")
+            admin_usernames = filter_config.get("admin_usernames", [])
+            
+            mode_desc = "Only users of specified admins are monitored" if mode == "include" else "Users of specified admins are whitelisted"
+            
+            await query.edit_message_text(
+                text=f"👤 <b>Admin Filter</b>\n\n"
+                     f"Filter users based on their owner admin.\n\n"
+                     f"<b>Mode:</b> {mode.title()}\n"
+                     f"<i>{mode_desc}</i>",
+                reply_markup=create_admin_filter_menu_keyboard(enabled, mode, admin_usernames),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            await query.edit_message_text(
+                text=f"❌ Error loading admin filter config: {e}",
+                reply_markup=create_back_to_settings_keyboard(),
+                parse_mode="HTML"
+            )
+        return
+    
+    # Admin filter toggle
+    if data == CallbackData.ADMIN_FILTER_TOGGLE:
+        try:
+            from utils.read_config import save_config_value
+            config_data = await read_config()
+            filter_config = config_data.get("admin_filter", {})
+            current_state = filter_config.get("enabled", False)
+            new_state = not current_state
+            
+            await save_config_value("admin_filter_enabled", "true" if new_state else "false")
+            
+            # Invalidate cache
+            from utils.read_config import invalidate_config_cache
+            invalidate_config_cache()
+            
+            config_data = await read_config()
+            filter_config = config_data.get("admin_filter", {})
+            enabled = filter_config.get("enabled", False)
+            mode = filter_config.get("mode", "include")
+            admin_usernames = filter_config.get("admin_usernames", [])
+            
+            status = "✅ Enabled" if enabled else "❌ Disabled"
+            await query.edit_message_text(
+                text=f"👤 <b>Admin Filter</b>\n\n"
+                     f"Status changed to: <b>{status}</b>",
+                reply_markup=create_admin_filter_menu_keyboard(enabled, mode, admin_usernames),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            await query.edit_message_text(
+                text=f"❌ Error: {e}",
+                reply_markup=create_back_to_settings_keyboard(),
+                parse_mode="HTML"
+            )
+        return
+    
+    # Admin filter mode selections
+    if data in [CallbackData.ADMIN_FILTER_MODE_INCLUDE, CallbackData.ADMIN_FILTER_MODE_EXCLUDE]:
+        mode = "include" if data == CallbackData.ADMIN_FILTER_MODE_INCLUDE else "exclude"
+        try:
+            from utils.read_config import save_config_value, invalidate_config_cache
+            await save_config_value("admin_filter_mode", mode)
+            invalidate_config_cache()
+            
+            config_data = await read_config()
+            filter_config = config_data.get("admin_filter", {})
+            enabled = filter_config.get("enabled", False)
+            admin_usernames = filter_config.get("admin_usernames", [])
+            
+            mode_desc = "Only users of specified admins are monitored" if mode == "include" else "Users of specified admins are whitelisted"
+            
+            await query.edit_message_text(
+                text=f"👤 <b>Admin Filter</b>\n\n"
+                     f"✅ Mode set to: <b>{mode.title()}</b>\n\n"
+                     f"<i>{mode_desc}</i>",
+                reply_markup=create_admin_filter_menu_keyboard(enabled, mode, admin_usernames),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            await query.edit_message_text(
+                text=f"❌ Error: {e}",
+                reply_markup=create_back_to_settings_keyboard(),
+                parse_mode="HTML"
+            )
+        return
+    
+    # Admin filter view admins
+    if data == "admin_filter_view_admins":
+        try:
+            from utils.admin_filter import get_all_admins
+            from utils.types import PanelType
+            
+            config_data = await read_config()
+            filter_config = config_data.get("admin_filter", {})
+            configured_usernames = filter_config.get("admin_usernames", [])
+            
+            # Get panel data for admin lookup
+            panel_config = config_data.get("panel", {})
+            panel_data = PanelType(
+                panel_config.get("username", ""),
+                panel_config.get("password", ""),
+                panel_config.get("domain", "")
+            )
+            
+            # Get all admins
+            admins = await get_all_admins(panel_data)
+            
+            admins_text = []
+            for admin in admins:
+                username = admin.get("username", "?")
+                is_sudo = admin.get("is_sudo", False)
+                is_disabled = admin.get("is_disabled", False)
+                is_configured = "✅" if username in configured_usernames else "⬜"
+                status = ""
+                if is_sudo:
+                    status += "👑"
+                if is_disabled:
+                    status += "🔒"
+                admins_text.append(f"  {is_configured} <code>{username}</code> {status}")
+            
+            if not admins_text:
+                admins_text = ["  No admins found in panel"]
+            
+            await query.edit_message_text(
+                text=f"👤 <b>Available Admins</b>\n\n"
+                     f"<b>Configured:</b> <code>{configured_usernames}</code>\n\n"
+                     f"<b>Panel Admins:</b>\n"
+                     f"{chr(10).join(admins_text)}\n\n"
+                     f"<i>Use /admin_filter_add &lt;username&gt; or /admin_filter_remove &lt;username&gt;</i>",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back to Admin Filter", callback_data=CallbackData.ADMIN_FILTER_MENU)],
+                ]),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            await query.edit_message_text(
+                text=f"❌ Error fetching admins: {e}\n\n<i>Make sure panel is configured and you have sudo access.</i>",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back to Admin Filter", callback_data=CallbackData.ADMIN_FILTER_MENU)],
+                ]),
+                parse_mode="HTML"
+            )
+        return
+    
+    if data == "admin_filter_info":
+        await query.answer("Toggle the filter with the button below", show_alert=False)
+        return
+    
     # Disable method menu
     if data == CallbackData.DISABLE_METHOD_MENU:
         await show_disable_method_menu(query)
@@ -4447,6 +4899,14 @@ application.add_handler(CommandHandler("group_filter_mode", group_filter_mode))
 application.add_handler(CommandHandler("group_filter_set", group_filter_set))
 application.add_handler(CommandHandler("group_filter_add", group_filter_add))
 application.add_handler(CommandHandler("group_filter_remove", group_filter_remove))
+
+# Admin filter commands
+application.add_handler(CommandHandler("admin_filter_status", admin_filter_status))
+application.add_handler(CommandHandler("admin_filter_toggle", admin_filter_toggle))
+application.add_handler(CommandHandler("admin_filter_mode", admin_filter_mode))
+application.add_handler(CommandHandler("admin_filter_set", admin_filter_set))
+application.add_handler(CommandHandler("admin_filter_add", admin_filter_add))
+application.add_handler(CommandHandler("admin_filter_remove", admin_filter_remove))
 
 application.add_handler(CommandHandler("connection_report", connection_report_command))
 application.add_handler(CommandHandler("node_usage", node_usage_report_command))
