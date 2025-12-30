@@ -2,7 +2,10 @@
 Send logs to telegram bot.
 """
 
+from utils.logs import get_logger
 from telegram_bot.utils import check_admin
+
+tg_send_logger = get_logger("telegram.send")
 
 
 async def send_logs(msg, return_message_id=False, reply_markup=None):
@@ -25,9 +28,11 @@ async def send_logs(msg, return_message_id=False, reply_markup=None):
     retries = 2
     first_message_info = None
     
+    tg_send_logger.debug(f"📤 Sending log to {len(admins)} admins ({len(msg)} chars)")
+    
     if admins:
         for admin in admins:
-            for _ in range(retries):
+            for attempt in range(retries):
                 try:
                     sent_message = await application.bot.sendMessage(
                         chat_id=admin, text=msg, parse_mode="HTML",
@@ -36,11 +41,12 @@ async def send_logs(msg, return_message_id=False, reply_markup=None):
                     # Store the first successful message info for editing later
                     if first_message_info is None and return_message_id:
                         first_message_info = (sent_message.message_id, admin)
+                    tg_send_logger.debug(f"✅ Message sent to admin {admin}")
                     break
                 except Exception as e:  # pylint: disable=broad-except
-                    print(f"Failed to send message to admin {admin}: {e}")
+                    tg_send_logger.warning(f"⚠️ Attempt {attempt + 1}/{retries} failed for admin {admin}: {e}")
     else:
-        print("No admins found.")
+        tg_send_logger.warning("⚠️ No admins found to send message")
     
     if return_message_id:
         return first_message_info
@@ -65,6 +71,7 @@ async def edit_message(message_info, new_text):
     
     from telegram_bot.main import application
     
+    tg_send_logger.debug(f"✏️ Editing message {message_id} in chat {chat_id}")
     try:
         await application.bot.edit_message_text(
             chat_id=chat_id,
@@ -72,9 +79,10 @@ async def edit_message(message_info, new_text):
             text=new_text,
             parse_mode="HTML"
         )
+        tg_send_logger.debug("✅ Message edited successfully")
         return True
     except Exception as e:
-        print(f"Failed to edit message: {e}")
+        tg_send_logger.error(f"❌ Failed to edit message: {e}")
         return False
 
 
@@ -88,6 +96,7 @@ async def send_disable_notification(msg: str, username: str):
     """
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     
+    tg_send_logger.debug(f"🚫 Sending disable notification for {username}")
     keyboard = [
         [InlineKeyboardButton(f"✅ Enable {username}", callback_data=f"enable_user:{username}")],
     ]
@@ -111,6 +120,7 @@ async def send_user_message(msg: str, username: str, device_count: int, has_spec
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     from telegram_bot.main import application
     
+    tg_send_logger.debug(f"📤 Sending user message for {username} (devices: {device_count})")
     admins = await check_admin()
     retries = 2
     
@@ -127,7 +137,7 @@ async def send_user_message(msg: str, username: str, device_count: int, has_spec
     
     if admins:
         for admin in admins:
-            for _ in range(retries):
+            for attempt in range(retries):
                 try:
                     await application.bot.sendMessage(
                         chat_id=admin, 
@@ -135,6 +145,7 @@ async def send_user_message(msg: str, username: str, device_count: int, has_spec
                         parse_mode="HTML",
                         reply_markup=reply_markup
                     )
+                    tg_send_logger.debug(f"✅ User message sent to admin {admin}")
                     break
                 except Exception as e:
-                    print(f"Failed to send user message to admin {admin}: {e}")
+                    tg_send_logger.warning(f"⚠️ Attempt {attempt + 1}/{retries} failed for admin {admin}: {e}")

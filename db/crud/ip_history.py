@@ -9,6 +9,9 @@ from sqlalchemy import select, delete, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import IPHistory
+from utils.logs import get_logger
+
+db_ip_logger = get_logger("db.ip_history")
 
 
 class IPHistoryCRUD:
@@ -23,6 +26,7 @@ class IPHistoryCRUD:
         inbound_protocol: Optional[str] = None,
     ) -> IPHistory:
         """Record an IP for a user (update if exists, create if not)."""
+        db_ip_logger.debug(f"📝 Recording IP for {username}: {ip}")
         result = await db.execute(
             select(IPHistory).where(
                 and_(IPHistory.username == username, IPHistory.ip == ip)
@@ -37,6 +41,7 @@ class IPHistoryCRUD:
                 history.node_name = node_name
             if inbound_protocol:
                 history.inbound_protocol = inbound_protocol
+            db_ip_logger.debug(f"✏️ Updated IP {ip} for {username} (count: {history.connection_count})")
         else:
             history = IPHistory(
                 username=username,
@@ -45,6 +50,7 @@ class IPHistoryCRUD:
                 inbound_protocol=inbound_protocol,
             )
             db.add(history)
+            db_ip_logger.debug(f"➕ New IP {ip} recorded for {username}")
         
         await db.flush()
         return history
@@ -52,6 +58,7 @@ class IPHistoryCRUD:
     @staticmethod
     async def get_user_ips(db: AsyncSession, username: str, hours: int = 24) -> List[IPHistory]:
         """Get IPs for a user within the specified hours."""
+        db_ip_logger.debug(f"🔍 Getting IPs for {username} (last {hours}h)")
         cutoff = datetime.utcnow() - timedelta(hours=hours)
         result = await db.execute(
             select(IPHistory)
@@ -63,11 +70,16 @@ class IPHistoryCRUD:
             )
             .order_by(IPHistory.last_seen.desc())
         )
-        return result.scalars().all()
+        ips = result.scalars().all()
+        db_ip_logger.debug(f"✅ Found {len(ips)} IPs for {username}")
+        return ips
     
     @staticmethod
     async def cleanup_old(db: AsyncSession, days: int = 7) -> int:
         """Remove IP history older than specified days."""
+        db_ip_logger.debug(f"🧹 Cleaning up IP history older than {days} days")
         cutoff = datetime.utcnow() - timedelta(days=days)
         result = await db.execute(delete(IPHistory).where(IPHistory.last_seen < cutoff))
+        if result.rowcount > 0:
+            db_ip_logger.info(f"✅ Cleaned up {result.rowcount} old IP records")
         return result.rowcount

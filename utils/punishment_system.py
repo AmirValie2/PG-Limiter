@@ -27,7 +27,9 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from utils.logs import logger
+from utils.logs import get_logger
+
+punishment_logger = get_logger("punishment")
 
 
 @dataclass
@@ -105,6 +107,7 @@ class PunishmentSystem:
         """Load violation history from file"""
         try:
             if os.path.exists(self.filename):
+                punishment_logger.debug(f"📂 Loading violation history from {self.filename}")
                 with open(self.filename, "r", encoding="utf-8") as file:
                     data = json.load(file)
                     
@@ -122,9 +125,9 @@ class PunishmentSystem:
                     # Clean up old violations
                     self.cleanup_old_violations()
                     
-                    logger.info(f"Loaded violation history for {len(self.violations)} users")
+                    punishment_logger.info(f"✅ Loaded violation history for {len(self.violations)} users")
         except Exception as e:
-            logger.error(f"Error loading violation history: {e}")
+            punishment_logger.error(f"❌ Error loading violation history: {e}")
             self.violations = {}
     
     async def save_violations(self):
@@ -146,9 +149,9 @@ class PunishmentSystem:
             with open(self.filename, "w", encoding="utf-8") as file:
                 json.dump(data, file, indent=2)
                 
-            logger.debug(f"Saved violation history for {len(self.violations)} users")
+            punishment_logger.debug(f"💾 Saved violation history for {len(self.violations)} users")
         except Exception as e:
-            logger.error(f"Error saving violation history: {e}")
+            punishment_logger.error(f"❌ Error saving violation history: {e}")
     
     def load_config(self, config_data: dict):
         """
@@ -170,10 +173,10 @@ class PunishmentSystem:
                 step_type = step.get("type", "disable")
                 duration = step.get("duration", 0)
                 self.steps.append(PunishmentStep(step_type, duration))
-            logger.info(f"Loaded {len(self.steps)} punishment steps from config")
+            punishment_logger.info(f"📋 Loaded {len(self.steps)} punishment steps from config (window: {self.window_hours}h)")
         else:
             self.steps = self.DEFAULT_STEPS.copy()
-            logger.debug("Using default punishment steps")
+            punishment_logger.debug("📋 Using default punishment steps")
     
     def cleanup_old_violations(self):
         """Remove violations older than the time window"""
@@ -253,20 +256,20 @@ class PunishmentSystem:
         self.violations[username].append(record)
         await self.save_violations()
         
-        logger.info(f"Recorded violation #{len(self.violations[username])} for {username} (step {step_applied})")
+        punishment_logger.info(f"📝 Recorded violation #{len(self.violations[username])} for {username} (step {step_applied}, duration: {duration_minutes}min)")
     
     async def clear_user_history(self, username: str):
         """Clear all violation history for a user"""
         if username in self.violations:
             del self.violations[username]
             await self.save_violations()
-            logger.info(f"Cleared violation history for {username}")
+            punishment_logger.info(f"🗑️ Cleared violation history for {username}")
     
     async def clear_all_history(self):
         """Clear all violation history"""
         self.violations = {}
         await self.save_violations()
-        logger.info("Cleared all violation history")
+        punishment_logger.info("🗑️ Cleared all violation history")
     
     def get_user_status(self, username: str) -> dict:
         """

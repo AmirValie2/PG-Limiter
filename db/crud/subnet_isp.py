@@ -9,6 +9,9 @@ from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import SubnetISP
+from utils.logs import get_logger
+
+db_isp_logger = get_logger("db.subnet_isp")
 
 
 class SubnetISPCRUD:
@@ -29,18 +32,23 @@ class SubnetISPCRUD:
     async def get_by_ip(db: AsyncSession, ip: str) -> Optional[SubnetISP]:
         """Get ISP info for an IP (looks up by subnet)."""
         subnet = SubnetISPCRUD.get_subnet_from_ip(ip)
+        db_isp_logger.debug(f"🔍 Looking up ISP for {ip} (subnet: {subnet})")
         result = await db.execute(select(SubnetISP).where(SubnetISP.subnet == subnet))
         isp = result.scalar_one_or_none()
         
         if isp:
             isp.hit_count += 1
             await db.flush()
+            db_isp_logger.debug(f"✅ Cache hit for {subnet}: {isp.isp}")
+        else:
+            db_isp_logger.debug(f"❌ Cache miss for {subnet}")
         
         return isp
     
     @staticmethod
     async def get_by_subnet(db: AsyncSession, subnet: str) -> Optional[SubnetISP]:
         """Get ISP info by subnet directly."""
+        db_isp_logger.debug(f"🔍 Looking up ISP by subnet: {subnet}")
         result = await db.execute(select(SubnetISP).where(SubnetISP.subnet == subnet))
         return result.scalar_one_or_none()
     
@@ -57,11 +65,13 @@ class SubnetISPCRUD:
     ) -> SubnetISP:
         """Cache ISP info for an IP's subnet."""
         subnet = SubnetISPCRUD.get_subnet_from_ip(ip)
+        db_isp_logger.debug(f"📝 Caching ISP for {subnet}: {isp}")
         
         result = await db.execute(select(SubnetISP).where(SubnetISP.subnet == subnet))
         existing = result.scalar_one_or_none()
         
         if existing:
+            db_isp_logger.debug(f"✏️ Updating ISP cache for {subnet}")
             existing.isp = isp
             existing.country = country
             existing.city = city
@@ -72,6 +82,7 @@ class SubnetISPCRUD:
             existing.hit_count += 1
             return existing
         
+        db_isp_logger.debug(f"➕ New ISP cache entry for {subnet}")
         subnet_isp = SubnetISP(
             subnet=subnet,
             isp=isp,
@@ -88,12 +99,14 @@ class SubnetISPCRUD:
     @staticmethod
     async def get_stats(db: AsyncSession) -> dict:
         """Get ISP cache statistics."""
+        db_isp_logger.debug("📊 Getting ISP cache stats")
         result = await db.execute(select(func.count(SubnetISP.id)))  # pylint: disable=not-callable
         count = result.scalar()
         
         result = await db.execute(select(func.sum(SubnetISP.hit_count)))
         total_hits = result.scalar() or 0
         
+        db_isp_logger.debug(f"✅ ISP cache: {count} subnets, {total_hits} total hits")
         return {
             "cached_subnets": count,
             "total_cache_hits": total_hits,
@@ -102,6 +115,9 @@ class SubnetISPCRUD:
     @staticmethod
     async def cleanup_old(db: AsyncSession, days: int = 30) -> int:
         """Remove cache entries older than specified days."""
+        db_isp_logger.debug(f"🧹 Cleaning up ISP cache older than {days} days")
         cutoff = datetime.utcnow() - timedelta(days=days)
         result = await db.execute(delete(SubnetISP).where(SubnetISP.cached_at < cutoff))
+        if result.rowcount > 0:
+            db_isp_logger.info(f"✅ Cleaned up {result.rowcount} old ISP cache entries")
         return result.rowcount

@@ -11,7 +11,7 @@ import ipaddress
 from typing import Dict, Optional, Set
 from datetime import datetime
 
-from utils.logs import logger
+from utils.logs import logger, log_monitoring_event, get_logger
 from utils.types import PanelType, UserType
 from utils.warning_system.user_warning import UserWarning
 from utils.warning_system.helpers import (
@@ -19,6 +19,9 @@ from utils.warning_system.helpers import (
     safe_send_disable_notification,
     safe_disable_user_with_punishment,
 )
+
+# Module logger
+warning_logger = get_logger("warning_system")
 
 
 class EnhancedWarningSystem:
@@ -41,6 +44,7 @@ class EnhancedWarningSystem:
         self.monitoring_period = 180  # 3 minutes in seconds
         self.load_warnings()
         self.load_warning_history()
+        warning_logger.debug(f"⚠️ EnhancedWarningSystem initialized (monitoring_period={self.monitoring_period}s)")
     
     def load_warning_history(self):
         """Load warning history from file"""
@@ -49,8 +53,9 @@ class EnhancedWarningSystem:
                 with open(self.history_filename, "r", encoding="utf-8") as file:
                     self.warning_history = json.load(file)
                     self.cleanup_old_warning_history()
+                    warning_logger.debug(f"⚠️ Loaded warning history for {len(self.warning_history)} users")
         except Exception as e:
-            logger.error(f"Error loading warning history: {e}")
+            warning_logger.error(f"Error loading warning history: {e}")
             self.warning_history = {}
     
     async def save_warning_history(self):
@@ -58,8 +63,9 @@ class EnhancedWarningSystem:
         try:
             with open(self.history_filename, "w", encoding="utf-8") as file:
                 json.dump(self.warning_history, file, indent=2)
+            warning_logger.debug(f"⚠️ Saved warning history ({len(self.warning_history)} users)")
         except Exception as e:
-            logger.error(f"Error saving warning history: {e}")
+            warning_logger.error(f"Error saving warning history: {e}")
     
     def cleanup_old_warning_history(self):
         """Remove warnings older than 24 hours from history"""
@@ -137,8 +143,9 @@ class EnhancedWarningSystem:
                         )
                         warning.monitoring_history = monitoring_history
                         self.warnings[username] = warning
+                    warning_logger.debug(f"⚠️ Loaded {len(self.warnings)} active warnings from file")
         except Exception as e:
-            logger.error(f"Error loading warnings: {e}")
+            warning_logger.error(f"Error loading warnings: {e}")
     
     async def save_warnings(self):
         """Save warnings to file"""
@@ -183,9 +190,10 @@ class EnhancedWarningSystem:
             
             with open(self.filename, "w", encoding="utf-8") as file:
                 json.dump(data, file, indent=2)
+            warning_logger.debug(f"⚠️ Saved {len(data)} warnings to file")
                 
         except Exception as e:
-            logger.error(f"Error saving warnings: {e}")
+            warning_logger.error(f"Error saving warnings: {e}")
     
     async def add_warning(self, username: str, ip_count: int, ips: Set[str], user_limit: int = None, 
                          user_data: 'UserType' = None, isp_info: dict = None,
@@ -198,6 +206,7 @@ class EnhancedWarningSystem:
             str: "new" if new warning, "updated" if existing, "instant_disabled" if instantly disabled
         """
         current_time = time.time()
+        warning_logger.info(f"⚠️ Processing warning for user: {username} (ip_count={ip_count}, limit={user_limit})")
         
         if username in self.warnings:
             warning = self.warnings[username]
@@ -216,12 +225,16 @@ class EnhancedWarningSystem:
                 warning.trust_score = warning.calculate_trust_score()
                 
                 await self.save_warnings()
+                warning_logger.debug(f"⚠️ Updated existing warning for {username} (trust={warning.trust_score:.0f})")
+                log_monitoring_event("warning_updated", username, {"ip_count": ip_count, "trust_score": warning.trust_score})
                 return "updated"
             else:
                 del self.warnings[username]
+                warning_logger.debug(f"⚠️ Removed expired warning for {username}")
         
         previous_warnings_12h = self.count_recent_warnings(username, hours=12)
         previous_warnings_24h = self.count_recent_warnings(username, hours=24)
+        warning_logger.debug(f"⚠️ User {username} history: {previous_warnings_12h} in 12h, {previous_warnings_24h} in 24h")
         
         inbound_protocols = set()
         isp_names = set()
@@ -269,6 +282,7 @@ class EnhancedWarningSystem:
         
         # INSTANT DISABLE: If trust score is very low, skip monitoring
         if warning.trust_score <= self.INSTANT_DISABLE_THRESHOLD and panel_data:
+            warning_logger.warning(f"⚡ INSTANT DISABLE triggered for {username} (trust={warning.trust_score:.0f} <= {self.INSTANT_DISABLE_THRESHOLD})")
             time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             limit_text = f"User limit: <code>{user_limit}</code>\n" if user_limit else ""
             
@@ -288,7 +302,8 @@ class EnhancedWarningSystem:
                         f"📊 Violation #{punishment_result['violation_count']} in time window\n"
                         f"⚡ Next violation will result in disable.",
                     )
-                    logger.warning(f"WARNING (instant): User {username} - violation #{punishment_result['violation_count']}")
+                    warning_logger.warning(f"⚠️ WARNING (instant): User {username} - violation #{punishment_result['violation_count']}")
+                    log_monitoring_event("instant_warning", username, {"violation": punishment_result['violation_count'], "trust": warning.trust_score})
                     return "warning"
                 elif punishment_result["action"] == "disabled":
                     duration_text = ""
@@ -310,11 +325,12 @@ class EnhancedWarningSystem:
                         username
                     )
                 
-                logger.warning(f"INSTANT DISABLE: User {username} disabled immediately (trust: {warning.trust_score:.0f})")
+                warning_logger.info(f"🚫 INSTANT DISABLE: User {username} disabled immediately (trust={warning.trust_score:.0f})")
+                log_monitoring_event("instant_disabled", username, {"trust": warning.trust_score, "duration_min": punishment_result.get("duration_minutes", 0)})
                 return "instant_disabled"
                 
             except Exception as e:
-                logger.error(f"Failed to instant disable user {username}: {e}")
+                warning_logger.error(f"Failed to instant disable user {username}: {e}")
         
         # NORMAL WARNING: Start 3-minute monitoring period
         warning.update_ip_activity(ips, current_time)
@@ -404,8 +420,11 @@ class EnhancedWarningSystem:
         special_limit = limits_config.get("special", {})
         limit_number = limits_config.get("general", 2)
         
+        warning_logger.debug(f"⚠️ Checking {len(self.warnings)} active warnings for persistent violations")
+        
         for username, warning in self.warnings.items():
             if not warning.is_monitoring_active():
+                warning_logger.debug(f"⚠️ Monitoring ended for {username}")
                 if warning.active_monitoring_task and not warning.active_monitoring_task.done():
                     warning.active_monitoring_task.cancel()
                 
@@ -422,9 +441,12 @@ class EnhancedWarningSystem:
                     current_persistent = current_ips.intersection(persistent_devices)
                     activity_summary = warning.get_ip_activity_summary()
                     
+                    warning_logger.info(f"⚠️ User {username}: {device_count} devices (limit: {user_limit_number}), trust={trust_score:.0f}")
+                    
                     time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
                     if device_count > user_limit_number:
+                        warning_logger.warning(f"🚫 User {username} exceeds limit: {device_count} > {user_limit_number}")
                         try:
                             punishment_result = await safe_disable_user_with_punishment(
                                 panel_data, UserType(name=username, ip=[])
@@ -442,7 +464,8 @@ class EnhancedWarningSystem:
                                     f"📊 Violation #{punishment_result['violation_count']} in time window\n"
                                     f"⚡ Next violation will result in disable."
                                 )
-                                logger.warning(f"WARNING: User {username} - {device_count} devices (limit: {user_limit_number}) - violation #{punishment_result['violation_count']}")
+                                warning_logger.warning(f"⚠️ WARNING: User {username} - {device_count} devices (limit: {user_limit_number}) - violation #{punishment_result['violation_count']}")
+                                log_monitoring_event("persistent_warning", username, {"devices": device_count, "limit": user_limit_number, "violation": punishment_result['violation_count']})
                             elif punishment_result["action"] == "disabled":
                                 disabled_users.add(username)
                                 
@@ -465,16 +488,18 @@ class EnhancedWarningSystem:
                                     username
                                 )
                                 
-                                logger.warning(f"Disabled user {username}: {device_count} devices (limit: {user_limit_number}) - step {punishment_result['step_index'] + 1}")
+                                warning_logger.warning(f"🚫 Disabled user {username}: {device_count} devices (limit: {user_limit_number}) - step {punishment_result['step_index'] + 1}")
+                                log_monitoring_event("user_disabled", username, {"devices": device_count, "limit": user_limit_number, "duration_min": punishment_result.get("duration_minutes", 0)})
                             else:
-                                logger.error(f"Punishment action error for {username}: {punishment_result['message']}")
+                                warning_logger.error(f"Punishment action error for {username}: {punishment_result['message']}")
                             
                         except Exception as e:
-                            logger.error(f"Failed to disable user {username}: {e}")
+                            warning_logger.error(f"Failed to disable user {username}: {e}")
                             await safe_send_logs(f"❌ <b>Error:</b> Failed to disable user {username}: {e}")
                     
                     elif len(current_ips) > user_limit_number and device_count <= user_limit_number:
-                        logger.info(f"User {username}: {len(current_ips)} IPs but only {device_count} devices - no action")
+                        warning_logger.info(f"✅ User {username}: {len(current_ips)} IPs but only {device_count} devices - no action")
+                        log_monitoring_event("monitoring_cleared", username, {"ips": len(current_ips), "devices": device_count, "limit": user_limit_number})
                         await safe_send_logs(
                             f"✅ <b>MONITORING ENDED - NO ACTION</b> - {time_str}\n\n"
                             f"User: <code>{username}</code>\n"
@@ -487,7 +512,8 @@ class EnhancedWarningSystem:
                         )
                     
                     else:
-                        logger.info(f"User {username} is now within limits ({device_count} devices, limit: {user_limit_number})")
+                        warning_logger.info(f"✅ User {username} is now within limits ({device_count} devices, limit: {user_limit_number})")
+                        log_monitoring_event("monitoring_ended", username, {"devices": device_count, "limit": user_limit_number})
                         await safe_send_logs(
                             f"✅ <b>MONITORING ENDED</b> - {time_str}\n\n"
                             f"User: <code>{username}</code>\n"
@@ -496,7 +522,8 @@ class EnhancedWarningSystem:
                             f"User is now compliant with device limits."
                         )
                 else:
-                    logger.info(f"User {username} not found in current logs - monitoring ended")
+                    warning_logger.info(f"ℹ️ User {username} not found in current logs - monitoring ended")
+                    log_monitoring_event("monitoring_ended", username, {"reason": "user_inactive"})
                     await safe_send_logs(
                         f"ℹ️ <b>MONITORING ENDED</b> - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                         f"User: <code>{username}</code>\n"
@@ -553,14 +580,14 @@ class EnhancedWarningSystem:
         
         if expired_users:
             await self.save_warnings()
-            logger.info(f"Cleaned up {len(expired_users)} expired warnings")
+            warning_logger.info(f"🧹 Cleaned up {len(expired_users)} expired warnings")
     
     async def start_monitoring_task(self, username: str, panel_data: PanelType):
         """
         Start a background monitoring task for a user.
         Currently disabled to prevent circular import issues.
         """
-        logger.debug(f"Monitoring for {username} handled through periodic checks")
+        warning_logger.debug(f"📍 Monitoring for {username} handled through periodic checks")
         return
 
     async def generate_monitoring_summary(self) -> Optional[str]:

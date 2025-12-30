@@ -9,6 +9,9 @@ from sqlalchemy import select, delete, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import ViolationHistory
+from utils.logs import get_logger
+
+db_violations_logger = get_logger("db.violations")
 
 
 class ViolationHistoryCRUD:
@@ -24,6 +27,7 @@ class ViolationHistoryCRUD:
         ips: Optional[List[str]] = None,
     ) -> ViolationHistory:
         """Add a violation record."""
+        db_violations_logger.debug(f"📝 Adding violation for {username}: step={step_applied}, duration={disable_duration}min")
         violation = ViolationHistory(
             username=username,
             timestamp=time.time(),
@@ -34,6 +38,7 @@ class ViolationHistoryCRUD:
         )
         db.add(violation)
         await db.flush()
+        db_violations_logger.info(f"✅ Violation recorded for {username}: step={step_applied}")
         return violation
     
     @staticmethod
@@ -43,6 +48,7 @@ class ViolationHistoryCRUD:
         window_hours: int = 72,
     ) -> List[ViolationHistory]:
         """Get violations for a user within the time window."""
+        db_violations_logger.debug(f"🔍 Getting violations for {username} (last {window_hours}h)")
         cutoff = time.time() - (window_hours * 3600)
         result = await db.execute(
             select(ViolationHistory)
@@ -54,7 +60,9 @@ class ViolationHistoryCRUD:
             )
             .order_by(ViolationHistory.timestamp.desc())
         )
-        return result.scalars().all()
+        violations = result.scalars().all()
+        db_violations_logger.debug(f"✅ Found {len(violations)} violations for {username}")
+        return violations
     
     @staticmethod
     async def get_violation_count(
@@ -63,6 +71,7 @@ class ViolationHistoryCRUD:
         window_hours: int = 72,
     ) -> int:
         """Get count of violations for a user within the time window."""
+        db_violations_logger.debug(f"🔍 Counting violations for {username} (last {window_hours}h)")
         cutoff = time.time() - (window_hours * 3600)
         result = await db.execute(
             select(func.count(ViolationHistory.id))  # pylint: disable=not-callable
@@ -73,23 +82,32 @@ class ViolationHistoryCRUD:
                 )
             )
         )
-        return result.scalar() or 0
+        count = result.scalar() or 0
+        db_violations_logger.debug(f"✅ {username} has {count} violations")
+        return count
     
     @staticmethod
     async def clear_user(db: AsyncSession, username: str) -> int:
         """Clear all violations for a user."""
+        db_violations_logger.debug(f"🗑️ Clearing violations for {username}")
         result = await db.execute(delete(ViolationHistory).where(ViolationHistory.username == username))
+        db_violations_logger.info(f"✅ Cleared {result.rowcount} violations for {username}")
         return result.rowcount
     
     @staticmethod
     async def clear_all(db: AsyncSession) -> int:
         """Clear all violation history."""
+        db_violations_logger.debug("🗑️ Clearing all violation history")
         result = await db.execute(delete(ViolationHistory))
+        db_violations_logger.info(f"✅ Cleared {result.rowcount} total violations")
         return result.rowcount
     
     @staticmethod
     async def cleanup_old(db: AsyncSession, days: int = 30) -> int:
         """Remove violations older than specified days."""
+        db_violations_logger.debug(f"🧹 Cleaning up violations older than {days} days")
         cutoff = time.time() - (days * 24 * 3600)
         result = await db.execute(delete(ViolationHistory).where(ViolationHistory.timestamp < cutoff))
+        if result.rowcount > 0:
+            db_violations_logger.info(f"✅ Cleaned up {result.rowcount} old violations")
         return result.rowcount

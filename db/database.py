@@ -15,7 +15,9 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import StaticPool
 
 from db.models import Base
-from utils.logs import logger
+from utils.logs import get_logger
+
+db_logger = get_logger("database")
 
 # Database URL - defaults to SQLite in data directory
 DATABASE_URL = os.environ.get(
@@ -25,6 +27,7 @@ DATABASE_URL = os.environ.get(
 
 # For SQLite, use StaticPool for better async support
 if DATABASE_URL.startswith("sqlite"):
+    db_logger.debug(f"📦 Using SQLite database: {DATABASE_URL}")
     engine = create_async_engine(
         DATABASE_URL,
         echo=False,
@@ -32,6 +35,7 @@ if DATABASE_URL.startswith("sqlite"):
         poolclass=StaticPool,
     )
 else:
+    db_logger.debug(f"📦 Using external database: {DATABASE_URL}")
     engine = create_async_engine(
         DATABASE_URL,
         echo=False,
@@ -63,18 +67,20 @@ async def init_db():
     db_dir = os.path.dirname(db_path)
     if db_dir and not os.path.exists(db_dir):
         os.makedirs(db_dir, exist_ok=True)
-        logger.info(f"Created database directory: {db_dir}")
+        db_logger.info(f"📁 Created database directory: {db_dir}")
     
+    db_logger.debug("🔄 Initializing database tables...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
-    logger.info(f"Database initialized: {DATABASE_URL}")
+    db_logger.info(f"✅ Database initialized: {DATABASE_URL}")
 
 
 async def close_db():
     """Close database connections."""
+    db_logger.debug("🔄 Closing database connections...")
     await engine.dispose()
-    logger.info("Database connections closed")
+    db_logger.info("✅ Database connections closed")
 
 
 @asynccontextmanager
@@ -87,16 +93,19 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             result = await db.execute(select(User))
             users = result.scalars().all()
     """
+    db_logger.debug("📂 Opening database session")
     session = AsyncSessionLocal()
     try:
         yield session
         await session.commit()
+        db_logger.debug("✅ Database session committed")
     except Exception as e:
         await session.rollback()
-        logger.error(f"Database error: {e}")
+        db_logger.error(f"❌ Database error (rolled back): {e}")
         raise
     finally:
         await session.close()
+        db_logger.debug("📁 Database session closed")
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:

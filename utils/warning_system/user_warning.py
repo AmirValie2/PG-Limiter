@@ -6,7 +6,9 @@ import time
 from typing import Dict, Optional, Set
 from dataclasses import dataclass
 
-from utils.logs import logger
+from utils.logs import get_logger
+
+trust_logger = get_logger("trust_score")
 
 
 @dataclass
@@ -229,17 +231,17 @@ class UserWarning:
         
         if ip_pattern['same_ip_multi_inbound']:
             score += 20
-            logger.debug(f"Trust [{self.username}]: +20 (same IP, multiple inbounds)")
+            trust_logger.debug(f"Trust [{self.username}]: +20 (same IP, multiple inbounds)")
         
         if ip_pattern['multi_ip_same_inbound']:
             score -= 30
-            logger.debug(f"Trust [{self.username}]: -30 (multiple IPs, same inbound)")
+            trust_logger.debug(f"Trust [{self.username}]: -30 (multiple IPs, same inbound)")
         
         inbound_count = len(self.inbound_protocols)
         if inbound_count > 1 and ip_count > 1 and not ip_pattern['same_ip_multi_inbound']:
             penalty = min(inbound_count, ip_count) * 15
             score -= penalty
-            logger.debug(f"Trust [{self.username}]: -{penalty} ({inbound_count} inbounds, {ip_count} IPs)")
+            trust_logger.debug(f"Trust [{self.username}]: -{penalty} ({inbound_count} inbounds, {ip_count} IPs)")
         
         # Factor 2: ISP/Network Pattern
         isp_pattern = self.detect_isp_change_pattern()
@@ -251,35 +253,35 @@ class UserWarning:
         if subnet_count > 1 and isp_count == 1:
             penalty = (subnet_count - 1) * 15
             score -= penalty
-            logger.debug(f"Trust [{self.username}]: -{penalty} ({subnet_count} subnets, same ISP)")
+            trust_logger.debug(f"Trust [{self.username}]: -{penalty} ({subnet_count} subnets, same ISP)")
         
         if isp_pattern in ("sim_swap", "possible_sim_swap"):
             score -= 8
-            logger.debug(f"Trust [{self.username}]: -8 (possible SIM swap)")
+            trust_logger.debug(f"Trust [{self.username}]: -8 (possible SIM swap)")
         elif isp_pattern == "multi_device":
             score -= 25
-            logger.debug(f"Trust [{self.username}]: -25 (multi-device ISP pattern)")
+            trust_logger.debug(f"Trust [{self.username}]: -25 (multi-device ISP pattern)")
         
         # Factor 3: Warning History
         if self.previous_warnings_12h > 0:
             penalty = self.previous_warnings_12h * 20
             score -= penalty
-            logger.debug(f"Trust [{self.username}]: -{penalty} ({self.previous_warnings_12h} disables in 12h)")
+            trust_logger.debug(f"Trust [{self.username}]: -{penalty} ({self.previous_warnings_12h} disables in 12h)")
         
         additional_24h = max(0, self.previous_warnings_24h - self.previous_warnings_12h)
         if additional_24h > 0:
             penalty = additional_24h * 10
             score -= penalty
-            logger.debug(f"Trust [{self.username}]: -{penalty} ({additional_24h} disables in 24h)")
+            trust_logger.debug(f"Trust [{self.username}]: -{penalty} ({additional_24h} disables in 24h)")
         
         # Factor 4: IP Count Severity
         if ip_count > 2:
             penalty = (ip_count - 2) * 10
             score -= penalty
-            logger.debug(f"Trust [{self.username}]: -{penalty} ({ip_count} IPs, excess penalty)")
+            trust_logger.debug(f"Trust [{self.username}]: -{penalty} ({ip_count} IPs, excess penalty)")
         
         score = max(-100.0, min(100.0, score))
-        logger.info(f"Trust score for {self.username}: {score:.0f}")
+        trust_logger.info(f"📊 Trust score for {self.username}: {score:.0f}")
         return score
     
     def get_trust_level(self) -> str:

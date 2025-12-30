@@ -9,9 +9,12 @@ from ssl import SSLError
 
 import httpx
 
-from utils.logs import logger
+from utils.logs import logger, log_api_request, get_logger
 from utils.types import PanelType, NodeType
 from utils.panel_api.auth import get_token, invalidate_token_cache, safe_send_logs_panel
+
+# Module logger
+nodes_logger = get_logger("panel_api.nodes")
 
 # Nodes cache to reduce API requests (1 hour cache)
 _nodes_cache = {
@@ -25,7 +28,7 @@ def invalidate_nodes_cache():
     """Invalidate the cached nodes list"""
     _nodes_cache["nodes"] = None
     _nodes_cache["expires_at"] = 0
-    logger.info("Nodes cache invalidated")
+    nodes_logger.info("🖥️ Nodes cache invalidated")
 
 
 async def get_nodes(panel_data: PanelType, force_refresh: bool = False) -> list[NodeType] | ValueError:
@@ -52,11 +55,13 @@ async def get_nodes(panel_data: PanelType, force_refresh: bool = False) -> list[
         if (_nodes_cache["expires_at"] > current_time and 
             _nodes_cache["panel_domain"] == panel_data.panel_domain):
             time_left = int(_nodes_cache["expires_at"] - current_time)
-            logger.debug(f"Using cached nodes list (expires in {time_left // 60} minutes)")
+            nodes_logger.debug(f"🖥️ Using cached nodes list (expires in {time_left // 60} minutes)")
             return _nodes_cache["nodes"]
     
+    nodes_logger.info(f"🖥️ Fetching nodes from panel (force_refresh={force_refresh})...")
     max_attempts = 5
     for attempt in range(max_attempts):
+        nodes_logger.debug(f"🖥️ Attempt {attempt + 1}/{max_attempts}")
         force_refresh_token = attempt > 0
         get_panel_token = await get_token(panel_data, force_refresh=force_refresh_token)
         if isinstance(get_panel_token, ValueError):
@@ -68,16 +73,20 @@ async def get_nodes(panel_data: PanelType, force_refresh: bool = False) -> list[
         all_nodes = []
         for scheme in ["https", "http"]:
             url = f"{scheme}://{panel_data.panel_domain}/api/nodes"
+            start_time = time.perf_counter()
             try:
                 async with httpx.AsyncClient(verify=False) as client:
                     response = await client.get(url, headers=headers, timeout=10)
+                    elapsed = (time.perf_counter() - start_time) * 1000
                     response.raise_for_status()
+                
+                log_api_request("GET", url, response.status_code, elapsed)
                 
                 try:
                     user_inform = response.json()
                 except Exception as json_error:
-                    logger.error(f"Failed to parse JSON from {url}: {json_error}")
-                    logger.error(f"Response text: {response.text[:200]}")
+                    nodes_logger.error(f"Failed to parse JSON from {url}: {json_error}")
+                    nodes_logger.debug(f"Response text: {response.text[:200]}")
                     continue
                 
                 # Handle both list and dict responses
@@ -90,18 +99,18 @@ async def get_nodes(panel_data: PanelType, force_refresh: bool = False) -> list[
                     elif "data" in user_inform:
                         nodes_list = user_inform["data"]
                     else:
-                        logger.warning(f"Unexpected nodes dict structure. Keys: {list(user_inform.keys())}")
+                        nodes_logger.warning(f"Unexpected nodes dict structure. Keys: {list(user_inform.keys())}")
                         if "id" in user_inform and "name" in user_inform:
                             nodes_list = [user_inform]
                         else:
-                            logger.error(f"Cannot parse nodes from dict: {user_inform}")
+                            nodes_logger.error(f"Cannot parse nodes from dict: {user_inform}")
                             continue
                 else:
-                    logger.error(f"Nodes response is neither list nor dict: {type(user_inform)}")
+                    nodes_logger.error(f"Nodes response is neither list nor dict: {type(user_inform)}")
                     continue
                 
                 if not nodes_list or not isinstance(nodes_list, list):
-                    logger.error(f"Failed to extract nodes list from response")
+                    nodes_logger.error(f"Failed to extract nodes list from response")
                     continue
                 
                 for node in nodes_list:
@@ -119,29 +128,45 @@ async def get_nodes(panel_data: PanelType, force_refresh: bool = False) -> list[
                 _nodes_cache["nodes"] = all_nodes
                 _nodes_cache["expires_at"] = time.time() + 3600
                 _nodes_cache["panel_domain"] = panel_data.panel_domain
-                logger.info(f"Cached {len(all_nodes)} nodes for 1 hour")
+                
+                nodes_logger.info(f"🖥️ Fetched {len(all_nodes)} nodes (cached for 1 hour) [{elapsed:.0f}ms]")
+                for node in all_nodes:
+                    nodes_logger.debug(f"  └─ {node.node_name} (id={node.node_id}, status={node.status})")
                 
                 return all_nodes
             except SSLError:
+                elapsed = (time.perf_counter() - start_time) * 1000
+                log_api_request("GET", url, None, elapsed, "SSL Error")
                 continue
             except httpx.HTTPStatusError:
+                elapsed = (time.perf_counter() - start_time) * 1000
                 if response.status_code == 401:
                     invalidate_token_cache()
-                    logger.warning("Got 401 error, invalidating token cache and retrying")
+                    nodes_logger.warning("Got 401 error, invalidating token cache and retrying")
+                log_api_request("GET", url, response.status_code, elapsed, f"HTTP {response.status_code}")
                 message = f"[{response.status_code}] {response.text}"
                 await safe_send_logs_panel(message)
-                logger.error(message)
+                nodes_logger.error(message)
+                continue
+            except httpx.TimeoutException:
+                elapsed = (time.perf_counter() - start_time) * 1000
+                log_api_request("GET", url, None, elapsed, "Timeout")
+                nodes_logger.warning(f"Timeout fetching nodes from {url}")
                 continue
             except Exception as error:  # pylint: disable=broad-except
+                elapsed = (time.perf_counter() - start_time) * 1000
+                log_api_request("GET", url, None, elapsed, str(error))
                 message = f"An unexpected error occurred: {error}"
                 await safe_send_logs_panel(message)
-                logger.error(message)
+                nodes_logger.error(message)
                 continue
-        await asyncio.sleep(min(30, random.randint(2, 5) * (attempt + 1)))
+        wait_time = min(30, random.randint(2, 5) * (attempt + 1))
+        nodes_logger.debug(f"Waiting {wait_time}s before retry...")
+        await asyncio.sleep(wait_time)
     message = (
         f"Failed to get nodes after {max_attempts} attempts. Make sure the panel is running "
         + "and the username and password are correct."
     )
     await safe_send_logs_panel(message)
-    logger.error(message)
+    nodes_logger.error(message)
     raise ValueError(message)
