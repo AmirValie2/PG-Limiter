@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 
 VERSION="0.4.2"
 
