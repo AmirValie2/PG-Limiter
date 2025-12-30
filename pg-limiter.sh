@@ -577,8 +577,28 @@ cmd_update() {
 # BACKUP / RESTORE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+ensure_zip_installed() {
+    if ! command -v zip &> /dev/null; then
+        colorized_echo blue "Installing zip utility..."
+        if [[ "$PKG_MANAGER" == "apt-get" ]]; then
+            apt-get update -qq && apt-get install -y -qq zip unzip
+        elif [[ "$PKG_MANAGER" == "yum" ]]; then
+            yum install -y -q zip unzip
+        elif [[ "$PKG_MANAGER" == "dnf" ]]; then
+            dnf install -y -q zip unzip
+        else
+            apt-get update -qq && apt-get install -y -qq zip unzip 2>/dev/null || \
+            yum install -y -q zip unzip 2>/dev/null || \
+            dnf install -y -q zip unzip 2>/dev/null
+        fi
+    fi
+}
+
 cmd_backup() {
     check_running_as_root
+    detect_os
+    detect_and_update_package_manager
+    ensure_zip_installed
     
     if ! is_installed; then
         colorized_echo red "PG-Limiter is not installed"
@@ -629,6 +649,9 @@ EOF
 
 cmd_restore() {
     check_running_as_root
+    detect_os
+    detect_and_update_package_manager
+    ensure_zip_installed
     
     local backup_file="$1"
     
