@@ -50,6 +50,8 @@
 | 🚫 **Exception List** | Exclude specific users from limiting |
 | 🧹 **Auto Cleanup** | Remove deleted users from limiter config |
 | 🔍 **Smart Skip** | Skip disabling users that don't exist in panel |
+| 💿 **SQLite Database** | Fast persistent storage with ISP caching |
+| 🐳 **Docker Support** | Easy deployment with Docker Compose |
 
 ---
 
@@ -63,13 +65,35 @@
 
 ## 🚀 Installation
 
-### Quick Install (Recommended)
+### Quick Install with Docker (Recommended)
 
 ```bash
-bash <(curl -sSL https://raw.githubusercontent.com/MatinDehghanian/PG-Limiter/master/scripts/limiter.sh)
+# Download and run the installer
+sudo bash <(curl -sSL https://raw.githubusercontent.com/MatinDehghanian/PG-Limiter/main/pg-limiter.sh) install
 ```
 
-### Manual Installation
+This will:
+1. Install Docker (if not present)
+2. Create configuration at `/etc/opt/pg-limiter/`
+3. Store data at `/var/lib/pg-limiter/`
+4. Guide you through interactive setup
+
+### Management Commands
+
+```bash
+pg-limiter start      # Start the service
+pg-limiter stop       # Stop the service
+pg-limiter restart    # Restart the service
+pg-limiter status     # Show service status
+pg-limiter logs       # View logs (follow mode)
+pg-limiter update     # Update to latest version
+pg-limiter backup     # Create backup zip
+pg-limiter restore    # Restore from backup
+pg-limiter config     # Edit configuration
+pg-limiter uninstall  # Remove PG-Limiter
+```
+
+### Manual Installation (Without Docker)
 
 ```bash
 # Clone repository
@@ -79,12 +103,26 @@ cd PG-Limiter
 # Install dependencies
 pip install -r requirements.txt
 
-# Copy example config
-cp config.example.json config.json
+# Copy example environment
+cp .env.example .env
+
+# Edit configuration
+nano .env
 
 # Run the limiter
 python3 limiter.py
 ```
+
+### Directory Structure
+
+| Path | Description |
+|------|-------------|
+| `/etc/opt/pg-limiter/` | Configuration files (.env, docker-compose.yml) |
+| `/var/lib/pg-limiter/` | Persistent data (database, logs) |
+| `/var/lib/pg-limiter/data/` | SQLite database |
+
+Docker volumes:
+- `/var/lib/pg-limiter/` → Persistent storage
 
 ### Fixing "externally-managed-environment" Error
 
@@ -105,54 +143,68 @@ pip install -r requirements.txt
 
 ## ⚙️ Configuration
 
-### Config File Structure
+Configuration is split into two parts:
+- **Environment variables (.env)**: Static settings like panel credentials, bot token, admin IDs
+- **Database**: Dynamic settings that can be changed via Telegram bot
 
-Edit `config.json` or use Telegram bot/CLI:
+### Environment Variables (.env)
 
-```json
-{
-  "panel": {
-    "domain": "your-panel.com:PORT",
-    "username": "admin",
-    "password": "your_password"
-  },
-  "telegram": {
-    "bot_token": "123456:ABC-YOUR-BOT-TOKEN",
-    "admins": [123456789]
-  },
-  "limits": {
-    "general": 2,
-    "special": {
-      "vip_user": 5,
-      "premium_user": 10
-    }
-  },
-  "except_users": ["unlimited_user", "test_user"],
-  "check_interval": 60,
-  "time_to_active_users": 900,
-  "country_code": "IR",
-  "disable_method": "status",
-  "disabled_group_id": null
-}
+Edit `/etc/opt/pg-limiter/.env` or use `pg-limiter config`:
+
+```bash
+# Panel Settings (Required)
+PANEL_DOMAIN=your-panel.com:PORT
+PANEL_USERNAME=admin
+PANEL_PASSWORD=your_password
+
+# Telegram Bot (Required)
+BOT_TOKEN=123456:ABC-YOUR-BOT-TOKEN
+ADMIN_IDS=123456789,987654321
+
+# Limiter Settings
+GENERAL_LIMIT=2
+CHECK_INTERVAL=60
+TIME_TO_ACTIVE_USERS=900
+COUNTRY_CODE=IR
+
+# API Server (Optional)
+API_ENABLED=false
+API_HOST=0.0.0.0
+API_PORT=8080
+API_USERNAME=admin
+API_PASSWORD=secret
+
+# Timezone
+TZ=Asia/Tehran
+
+# Database
+DATABASE_URL=sqlite+aiosqlite:///./data/pg_limiter.db
 ```
 
 ### Configuration Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `panel.domain` | string | - | Panel address with port |
-| `panel.username` | string | - | Panel admin username |
-| `panel.password` | string | - | Panel admin password |
-| `telegram.bot_token` | string | - | Telegram bot token |
-| `telegram.admins` | array | [] | List of admin chat IDs |
-| `limits.general` | int | 2 | Default IP limit for all users |
-| `limits.special` | object | {} | Per-user custom limits |
-| `except_users` | array | [] | Users excluded from limiting |
-| `check_interval` | int | 60 | Check interval in seconds |
-| `time_to_active_users` | int | 900 | Re-enable timeout in seconds |
-| `country_code` | string | "" | Filter IPs by country (IR/RU/CN) |
-| `disable_method` | string | "status" | How to disable users: `status` or `group` |
-| `disabled_group_id` | int | null | Group ID for group-based disable |
+| `PANEL_DOMAIN` | string | - | Panel address with port |
+| `PANEL_USERNAME` | string | admin | Panel admin username |
+| `PANEL_PASSWORD` | string | - | Panel admin password |
+| `BOT_TOKEN` | string | - | Telegram bot token |
+| `ADMIN_IDS` | string | - | Comma-separated admin chat IDs |
+| `GENERAL_LIMIT` | int | 2 | Default IP limit for all users |
+| `CHECK_INTERVAL` | int | 60 | Check interval in seconds |
+| `TIME_TO_ACTIVE_USERS` | int | 900 | Re-enable timeout in seconds |
+| `COUNTRY_CODE` | string | "" | Filter IPs by country (IR/RU/CN) |
+
+### Dynamic Settings (via Telegram Bot)
+
+These settings can be changed from the Telegram bot Settings menu:
+- **Special Limits**: Per-user custom limits
+- **Except Users**: Users excluded from limiting
+- **Disable Method**: How to disable users (`status` or `group`)
+- **Disabled Group ID**: Group ID for group-based disable
+- **Enhanced Details**: Show detailed ISP info
+- **Punishment System**: Auto-escalate repeat violators
+- **Group Filter**: Only monitor specific user groups
 
 ---
 

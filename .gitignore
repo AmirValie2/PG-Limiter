@@ -35,6 +35,7 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+dockerized-example
 
 # Unit test / coverage reports
 htmlcov/
@@ -190,3 +191,9 @@ Thumbs.db
 
 # Screen sessions
 screen.log
+# Docker
+.env
+!.env.example
+
+# Backup files
+backups/

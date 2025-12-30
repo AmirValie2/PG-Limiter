@@ -1,180 +1,291 @@
 """
-Read config file and return data.
-Auto-converts old flat format to new structured format.
+Configuration module for PG-Limiter.
+Reads settings from:
+- Environment variables (.env) for static settings
+- Database for dynamic settings that can be changed via Telegram
 """
-# pylint: disable=global-statement
 
-import json
 import os
-import sys
-import time
+from typing import Any, Dict, List, Optional
 
-CONFIG_DATA = None
-LAST_READ_TIME = 0
+# Try to import database module
+try:
+    from db import get_db, ConfigCRUD, UserLimitCRUD, ExceptUserCRUD
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
 
-# Mapping from old flat keys to new nested paths
-OLD_TO_NEW_MAP = {
-    # Panel settings
-    "PANEL_DOMAIN": ("panel", "domain"),
-    "PANEL_USERNAME": ("panel", "username"),
-    "PANEL_PASSWORD": ("panel", "password"),
-    # Telegram settings
-    "BOT_TOKEN": ("telegram", "bot_token"),
-    "ADMINS": ("telegram", "admins"),
-    # Limits settings
-    "GENERAL_LIMIT": ("limits", "general"),
-    "SPECIAL_LIMIT": ("limits", "special"),
-    "SPECIAL_LIMITS": ("limits", "special"),  # Alternative spelling
-    "EXCEPT_USERS": ("limits", "except_users"),
-    # Monitoring settings
-    "CHECK_INTERVAL": ("monitoring", "check_interval"),
-    "TIME_TO_ACTIVE_USERS": ("monitoring", "time_to_active_users"),
-    "IP_LOCATION": ("monitoring", "ip_location"),
-    # Display settings (SHOW_SINGLE_DEVICE_USERS removed)
-    "SHOW_ENHANCED_DETAILS": ("display", "show_enhanced_details"),
-    # API settings
-    "IPINFO_TOKEN": ("api", "ipinfo_token"),
-    "USE_FALLBACK_ISP_API": ("api", "use_fallback_isp_api"),
-}
+# Cache for config
+_config_cache: Dict[str, Any] = {}
+_cache_loaded = False
 
 
-def is_old_format(data: dict) -> bool:
-    """Check if config uses old flat format."""
-    # Old format has flat keys like PANEL_DOMAIN at root level
-    return "PANEL_DOMAIN" in data or "BOT_TOKEN" in data or "GENERAL_LIMIT" in data
+def _parse_admin_ids(admin_ids_str: str) -> List[int]:
+    """Parse comma-separated admin IDs into list of integers."""
+    if not admin_ids_str:
+        return []
+    try:
+        return [int(id.strip()) for id in admin_ids_str.split(",") if id.strip()]
+    except ValueError:
+        return []
 
 
-def convert_old_to_new(old_data: dict) -> dict:
-    """Convert old flat config format to new nested format."""
-    new_data = {
-        "panel": {},
-        "telegram": {},
-        "limits": {},
-        "monitoring": {},
-        "display": {},
-        "api": {}
+def _get_env(key: str, default: Any = None, cast_type: type = str) -> Any:
+    """Get environment variable with type casting."""
+    value = os.environ.get(key, default)
+    if value is None or value == "":
+        return default
+    
+    if cast_type == bool:
+        return str(value).lower() in ("true", "1", "yes", "on")
+    elif cast_type == int:
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+    elif cast_type == float:
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+    
+    return value
+
+
+def load_env_config() -> Dict[str, Any]:
+    """Load configuration from environment variables."""
+    return {
+        # Panel settings (from ENV only)
+        "panel": {
+            "domain": _get_env("PANEL_DOMAIN", ""),
+            "username": _get_env("PANEL_USERNAME", "admin"),
+            "password": _get_env("PANEL_PASSWORD", ""),
+        },
+        # Telegram settings (from ENV only)
+        "telegram": {
+            "bot_token": _get_env("BOT_TOKEN", ""),
+            "admins": _parse_admin_ids(_get_env("ADMIN_IDS", "")),
+        },
+        # Limiter settings (from ENV - defaults)
+        "limits": {
+            "general": _get_env("GENERAL_LIMIT", 2, int),
+            "special": {},  # Loaded from DB
+        },
+        "except_users": [],  # Loaded from DB
+        # Monitoring settings (from ENV)
+        "check_interval": _get_env("CHECK_INTERVAL", 60, int),
+        "time_to_active_users": _get_env("TIME_TO_ACTIVE_USERS", 900, int),
+        "country_code": _get_env("COUNTRY_CODE", ""),
+        # API settings (from ENV)
+        "api": {
+            "enabled": _get_env("API_ENABLED", False, bool),
+            "host": _get_env("API_HOST", "0.0.0.0"),
+            "port": _get_env("API_PORT", 8080, int),
+            "username": _get_env("API_USERNAME", "admin"),
+            "password": _get_env("API_PASSWORD", ""),
+        },
+        # Database
+        "database_url": _get_env(
+            "DATABASE_URL",
+            "sqlite+aiosqlite:///./data/pg_limiter.db"
+        ),
+    }
+
+
+async def load_db_config() -> Dict[str, Any]:
+    """Load dynamic configuration from database."""
+    if not DB_AVAILABLE:
+        return {}
+    
+    try:
+        async with get_db() as session:
+            # Load all config from database
+            db_config = await ConfigCRUD.get_all(session)
+            
+            # Load special limits
+            special_limits = await UserLimitCRUD.get_all(session)
+            
+            # Load except users
+            except_users = await ExceptUserCRUD.get_all(session)
+        
+        return {
+            "db_config": db_config,
+            "special_limits": special_limits,
+            "except_users": except_users,
+        }
+    except Exception:
+        return {}
+
+
+def get_config_sync() -> Dict[str, Any]:
+    """Get configuration synchronously (ENV only, for startup)."""
+    return load_env_config()
+
+
+async def read_config(check_required_elements: bool = False) -> Dict[str, Any]:
+    """
+    Read and return merged configuration from ENV and DB.
+    
+    Args:
+        check_required_elements: If True, validate required settings
+        
+    Returns:
+        Complete configuration dictionary
+    """
+    global _config_cache, _cache_loaded
+    
+    # Load ENV config
+    env_config = load_env_config()
+    
+    # Load DB config
+    db_data = await load_db_config()
+    
+    # Merge configurations
+    config = env_config.copy()
+    
+    # Add special limits from DB
+    if "special_limits" in db_data:
+        config["limits"]["special"] = db_data["special_limits"]
+    
+    # Add except users from DB
+    if "except_users" in db_data:
+        config["except_users"] = db_data["except_users"]
+    
+    # Merge DB config (dynamic settings changeable via Telegram)
+    db_config = db_data.get("db_config", {})
+    
+    # Dynamic settings from DB (with ENV fallbacks)
+    config["disable_method"] = db_config.get("disable_method", "status")
+    config["disabled_group_id"] = db_config.get("disabled_group_id")
+    if config["disabled_group_id"]:
+        try:
+            config["disabled_group_id"] = int(config["disabled_group_id"])
+        except (ValueError, TypeError):
+            config["disabled_group_id"] = None
+    
+    config["enhanced_details"] = db_config.get("enhanced_details", "true").lower() == "true"
+    config["show_single_ip_users"] = db_config.get("show_single_ip_users", "false").lower() == "true"
+    config["ipinfo_token"] = db_config.get("ipinfo_token", "")
+    
+    # Punishment system settings
+    config["punishment"] = {
+        "enabled": db_config.get("punishment_enabled", "true").lower() == "true",
+        "window_hours": int(db_config.get("punishment_window_hours", "168")),
     }
     
-    for old_key, path in OLD_TO_NEW_MAP.items():
-        if old_key in old_data:
-            section, key = path
-            new_data[section][key] = old_data[old_key]
-    
-    # Set defaults for missing values
-    if "general" not in new_data["limits"]:
-        new_data["limits"]["general"] = 2
-    if "special" not in new_data["limits"]:
-        new_data["limits"]["special"] = {}
-    if "except_users" not in new_data["limits"]:
-        new_data["limits"]["except_users"] = []
-    if "check_interval" not in new_data["monitoring"]:
-        new_data["monitoring"]["check_interval"] = 60
-    if "time_to_active_users" not in new_data["monitoring"]:
-        new_data["monitoring"]["time_to_active_users"] = 1800
-    if "ip_location" not in new_data["monitoring"]:
-        new_data["monitoring"]["ip_location"] = "IR"
-    if "show_enhanced_details" not in new_data["display"]:
-        new_data["display"]["show_enhanced_details"] = True
-    if "ipinfo_token" not in new_data["api"]:
-        new_data["api"]["ipinfo_token"] = ""
-    if "use_fallback_isp_api" not in new_data["api"]:
-        new_data["api"]["use_fallback_isp_api"] = False
-    
-    return new_data
-
-
-def save_config(data: dict, config_file: str = "config.json"):
-    """Save config to file."""
-    with open(config_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-
-async def read_config(check_required_elements=None) -> dict:
-    """
-    Read and return data from config.json file.
-    Auto-converts old format to new format if detected.
-    """
-    global CONFIG_DATA
-    global LAST_READ_TIME
-    config_file = "config.json"
-
-    if not os.path.exists(config_file):
-        print("Config file not found.")
-        sys.exit()
-    
-    file_mod_time = os.path.getmtime(config_file)
-    
-    if CONFIG_DATA is None or file_mod_time > LAST_READ_TIME:
+    # Group filter settings
+    config["group_filter"] = {
+        "enabled": db_config.get("group_filter_enabled", "false").lower() == "true",
+        "group_ids": [],
+    }
+    group_ids_str = db_config.get("group_filter_ids", "")
+    if group_ids_str:
         try:
-            with open(config_file, "r", encoding="utf-8") as f:
-                raw_data = json.load(f)
-        except json.JSONDecodeError as error:
-            print(
-                "Error decoding the config.json file. Please check its syntax.", error
-            )
-            sys.exit()
-        
-        # Auto-convert old format to new format
-        if is_old_format(raw_data):
-            print("🔄 Converting old config format to new format...")
-            raw_data = convert_old_to_new(raw_data)
-            save_config(raw_data, config_file)
-            print("✓ Config converted and saved!")
-        
-        CONFIG_DATA = raw_data
-        
-        # Validate required keys
-        if not CONFIG_DATA.get("telegram", {}).get("bot_token"):
-            print("BOT_TOKEN is not set in the config.json file.")
-            sys.exit()
-        if not CONFIG_DATA.get("telegram", {}).get("admins"):
-            print("ADMINS is not set in the config.json file.")
-            sys.exit()
-        
-        LAST_READ_TIME = time.time()
+            config["group_filter"]["group_ids"] = [
+                int(x.strip()) for x in group_ids_str.split(",") if x.strip()
+            ]
+        except ValueError:
+            pass
     
+    # Validate required elements
     if check_required_elements:
-        required_checks = [
-            ("panel", "domain", "PANEL_DOMAIN"),
-            ("panel", "username", "PANEL_USERNAME"),
-            ("panel", "password", "PANEL_PASSWORD"),
-            ("monitoring", "check_interval", "CHECK_INTERVAL"),
-            ("monitoring", "time_to_active_users", "TIME_TO_ACTIVE_USERS"),
-            ("monitoring", "ip_location", "IP_LOCATION"),
-            ("limits", "general", "GENERAL_LIMIT"),
-        ]
-        for section, key, old_name in required_checks:
-            if not CONFIG_DATA.get(section, {}).get(key):
-                raise ValueError(
-                    f"Missing required element '{old_name}' in the config file."
-                )
+        if not config["panel"]["domain"]:
+            raise ValueError("PANEL_DOMAIN is not set in environment")
+        if not config["panel"]["password"]:
+            raise ValueError("PANEL_PASSWORD is not set in environment")
+        if not config["telegram"]["bot_token"]:
+            raise ValueError("BOT_TOKEN is not set in environment")
+        if not config["telegram"]["admins"]:
+            raise ValueError("ADMIN_IDS is not set in environment")
     
-    return CONFIG_DATA
+    _config_cache = config
+    _cache_loaded = True
+    
+    return config
 
 
-def get_config_value(config: dict, key: str, default=None):
+async def save_config_value(key: str, value: Any) -> bool:
     """
-    Get config value using new nested format.
-    Helper function for easy access.
+    Save a dynamic configuration value to database.
+    
+    Args:
+        key: Configuration key
+        value: Value to save
+        
+    Returns:
+        True if successful
+    """
+    if not DB_AVAILABLE:
+        return False
+    
+    try:
+        async with get_db() as session:
+            await ConfigCRUD.set(session, key, str(value))
+        return True
+    except Exception:
+        return False
+
+
+async def delete_config_value(key: str) -> bool:
+    """Delete a configuration value from database."""
+    if not DB_AVAILABLE:
+        return False
+    
+    try:
+        async with get_db() as session:
+            await ConfigCRUD.delete(session, key)
+        return True
+    except Exception:
+        return False
+
+
+async def get_config_value_from_db(key: str, default: Any = None) -> Any:
+    """Get a single config value from database."""
+    if not DB_AVAILABLE:
+        return default
+    
+    try:
+        async with get_db() as session:
+            value = await ConfigCRUD.get(session, key, default)
+            return value
+    except Exception:
+        return default
+
+
+def get_config_value(config: dict, key: str, default: Any = None) -> Any:
+    """
+    Get config value by key name.
+    Supports both old flat keys and new structure.
     """
     key_map = {
-        "PANEL_DOMAIN": ("panel", "domain"),
-        "PANEL_USERNAME": ("panel", "username"),
-        "PANEL_PASSWORD": ("panel", "password"),
-        "BOT_TOKEN": ("telegram", "bot_token"),
-        "ADMINS": ("telegram", "admins"),
-        "GENERAL_LIMIT": ("limits", "general"),
-        "SPECIAL_LIMIT": ("limits", "special"),
-        "EXCEPT_USERS": ("limits", "except_users"),
-        "CHECK_INTERVAL": ("monitoring", "check_interval"),
-        "TIME_TO_ACTIVE_USERS": ("monitoring", "time_to_active_users"),
-        "IP_LOCATION": ("monitoring", "ip_location"),
-        "SHOW_ENHANCED_DETAILS": ("display", "show_enhanced_details"),
-        "IPINFO_TOKEN": ("api", "ipinfo_token"),
-        "USE_FALLBACK_ISP_API": ("api", "use_fallback_isp_api"),
+        "PANEL_DOMAIN": lambda c: c.get("panel", {}).get("domain"),
+        "PANEL_USERNAME": lambda c: c.get("panel", {}).get("username"),
+        "PANEL_PASSWORD": lambda c: c.get("panel", {}).get("password"),
+        "BOT_TOKEN": lambda c: c.get("telegram", {}).get("bot_token"),
+        "ADMINS": lambda c: c.get("telegram", {}).get("admins"),
+        "GENERAL_LIMIT": lambda c: c.get("limits", {}).get("general"),
+        "SPECIAL_LIMIT": lambda c: c.get("limits", {}).get("special"),
+        "SPECIAL_LIMITS": lambda c: c.get("limits", {}).get("special"),
+        "EXCEPT_USERS": lambda c: c.get("except_users"),
+        "CHECK_INTERVAL": lambda c: c.get("check_interval"),
+        "TIME_TO_ACTIVE_USERS": lambda c: c.get("time_to_active_users"),
+        "COUNTRY_CODE": lambda c: c.get("country_code"),
+        "IP_LOCATION": lambda c: c.get("country_code"),  # Alias
+        "DISABLE_METHOD": lambda c: c.get("disable_method"),
+        "DISABLED_GROUP_ID": lambda c: c.get("disabled_group_id"),
+        "ENHANCED_DETAILS": lambda c: c.get("enhanced_details"),
+        "SHOW_SINGLE_IP_USERS": lambda c: c.get("show_single_ip_users"),
+        "IPINFO_TOKEN": lambda c: c.get("ipinfo_token"),
     }
     
     if key in key_map:
-        section, nested_key = key_map[key]
-        return config.get(section, {}).get(nested_key, default)
+        value = key_map[key](config)
+        return value if value is not None else default
+    
     return config.get(key, default)
+
+
+# Compatibility aliases
+async def get_config(*args, **kwargs):
+    """Alias for read_config for backward compatibility."""
+    return await read_config(*args, **kwargs)

@@ -8,6 +8,10 @@ import asyncio
 import os
 import sys
 import json
+import shutil
+import tempfile
+import zipfile
+from datetime import datetime
 
 try:
     from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -192,33 +196,10 @@ class CallbackData:
 # This will be set properly when run_telegram_bot is called
 bot_token = None
 try:
-    # Try multiple possible config paths
-    config_paths = [
-        "config.json",
-        "config/config.json",
-        "./config/config.json",
-        os.path.join(os.getcwd(), "config.json"),
-        os.path.join(os.getcwd(), "config/config.json"),
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json"),
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), "config/config.json")
-    ]
-    
-    config_loaded = False
-    for config_path in config_paths:
-        if os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # Support both new and old config format
-                telegram_config = data.get("telegram", {})
-                bot_token = telegram_config.get("bot_token") or data.get("BOT_TOKEN", "")
-                if bot_token:
-                    config_loaded = True
-                    print(f"✓ Bot token loaded from: {config_path}")
-                    break
-    
-    if not config_loaded:
-        print(f"⚠ Config file not found. Tried paths: {config_paths}")
-        print(f"⚠ Current working directory: {os.getcwd()}")
+    # First try environment variable (preferred)
+    bot_token = os.environ.get("BOT_TOKEN", "")
+    if bot_token:
+        print("✓ Bot token loaded from environment")
 except Exception as e:
     print(f"⚠ Error loading config at module import: {e}")
     import traceback
@@ -259,22 +240,12 @@ def create_settings_menu_keyboard():
     """Create the settings menu inline keyboard."""
     keyboard = [
         [
-            InlineKeyboardButton("🔧 Panel Config", callback_data=CallbackData.CREATE_CONFIG),
-        ],
-        [
-            InlineKeyboardButton("🌍 Country Code", callback_data="country_menu"),
-            InlineKeyboardButton("🔑 IPInfo Token", callback_data=CallbackData.SET_IPINFO),
-        ],
-        [
-            InlineKeyboardButton("⏱️ Check Interval", callback_data="interval_menu"),
-            InlineKeyboardButton("⏰ Active Time", callback_data="time_menu"),
+            InlineKeyboardButton("� IPInfo Token", callback_data=CallbackData.SET_IPINFO),
+            InlineKeyboardButton("🚫 Disable Method", callback_data=CallbackData.DISABLE_METHOD_MENU),
         ],
         [
             InlineKeyboardButton("📋 Enhanced Details", callback_data="enhanced_menu"),
             InlineKeyboardButton("1️⃣ Single IP Users", callback_data="single_ip_menu"),
-        ],
-        [
-            InlineKeyboardButton("🚫 Disable Method", callback_data=CallbackData.DISABLE_METHOD_MENU),
         ],
         [
             InlineKeyboardButton("⚖️ Punishment", callback_data=CallbackData.PUNISHMENT_MENU),
@@ -820,11 +791,16 @@ def create_back_to_settings_keyboard():
 async def show_disable_method_menu(query):
     """Display the disable method selection menu."""
     try:
-        with open("config.json", "r", encoding="utf-8") as f:
-            config = json.load(f)
+        from utils.read_config import read_config
+        config = await read_config()
         
         current_method = config.get("disable_method", "status")
         disabled_group_id = config.get("disabled_group_id", None)
+        
+        if current_method == "group" and disabled_group_id:
+            status = f"Group-based (Group ID: {disabled_group_id})"
+        else:
+            status = "Status-based (default)"
         
         if current_method == "group" and disabled_group_id:
             status = f"Group-based (Group ID: {disabled_group_id})"
@@ -946,14 +922,10 @@ async def show_groups_for_disabled_selection(query):
 async def set_disabled_group(query, group_id: int):
     """Set the selected group as the disabled group."""
     try:
-        with open("config.json", "r", encoding="utf-8") as f:
-            config = json.load(f)
+        from utils.read_config import save_config_value
         
-        config["disable_method"] = "group"
-        config["disabled_group_id"] = group_id
-        
-        with open("config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
+        await save_config_value("disable_method", "group")
+        await save_config_value("disabled_group_id", group_id)
         
         await query.edit_message_text(
             text=(
@@ -1212,38 +1184,40 @@ async def help_command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
 async def create_config(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     """
     Add panel domain, username, and password to add into the config file.
+    Note: Panel credentials are now stored in .env file, not config.json.
     """
     check = await check_admin_privilege(update)
     if check:
         return check
-    if os.path.exists("config.json"):
-        json_data = await read_json_file()
-        # Support both new and old config format
-        panel_config = json_data.get("panel", {})
-        domain = panel_config.get("domain") or json_data.get("PANEL_DOMAIN")
-        username = panel_config.get("username") or json_data.get("PANEL_USERNAME")
-        password = panel_config.get("password") or json_data.get("PANEL_PASSWORD")
-        if domain and username and password:
-            await update.message.reply_html(text="You set configuration before!")
-            await update.message.reply_html(
-                text="After changing the configuration, you need to <b>restart</b> the bot.\n"
-                + "Only this command needs restart other commands <b>don't need it.</b>"
-            )
-            await update.message.reply_html(
-                text="<b>Current configuration:</b>\n"
-                + f"Domain: <code>{domain}</code>\n"
-                + f"Username: <code>{username}</code>\n"
-                + f"Password: <code>{password}</code>\n"
-                + "Do you want to change these settings? <code>(yes/no)</code>"
-            )
-            return GET_CONFIRMATION
+    
+    # Check if environment variables are already set
+    from utils.read_config import load_env_config
+    env_config = load_env_config()
+    panel_config = env_config.get("panel", {})
+    domain = panel_config.get("domain")
+    username = panel_config.get("username")
+    password = panel_config.get("password")
+    
+    if domain and password:
+        await update.message.reply_html(text="You set configuration before!")
+        await update.message.reply_html(
+            text="⚠️ <b>Note:</b> Panel credentials are stored in <code>.env</code> file.\n"
+            + "To change them, edit the .env file or use:\n"
+            + "<code>pg-limiter config</code>\n\n"
+            + "<b>Current configuration:</b>\n"
+            + f"Domain: <code>{domain}</code>\n"
+            + f"Username: <code>{username}</code>\n"
+            + f"Password: <code>{'*' * len(password) if password else 'Not set'}</code>"
+        )
+        return ConversationHandler.END
+    
     await update.message.reply_html(
-        text="So now give me your <b>panel address!</b>\n"
-        + "Send The Domain or Ip with Port\n"
-        + "like: <code>sub.domain.com:8333</code> Or <code>95.12.153.87:443</code> \n"
-        + "<b>without</b> <code>https://</code> or <code>http://</code> or anything else",
+        text="⚠️ Panel credentials should be configured in the <code>.env</code> file.\n\n"
+        + "To change settings, edit <code>/etc/opt/pg-limiter/.env</code>\n"
+        + "or use <code>pg-limiter config</code> command.\n\n"
+        + "Then restart the service with <code>pg-limiter restart</code>"
     )
-    return GET_DOMAIN
+    return ConversationHandler.END
 
 
 async def get_confirmation(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1326,7 +1300,7 @@ async def remove_admin(update: Update, _context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_html(
             text="there is just <b>1</b> active admin remain."
             + " <b>if you delete this chat id, then first person start bot "
-            + "is new admin</b> or <b>add admin chat id</b> in <code>config.json</code> file"
+            + "is new admin</b> or <b>add admin chat id</b> in <code>ADMIN_IDS</code> environment variable"
         )
     await update.message.reply_html(text="Send chat id of the admin to remove: ")
     return GET_CHAT_ID_TO_REMOVE
@@ -1396,98 +1370,257 @@ async def write_country_code(update: Update, _context: ContextTypes.DEFAULT_TYPE
 
 
 async def send_backup(update: Update, _context: ContextTypes.DEFAULT_TYPE):
-    """Send the backup file to the user."""
+    """Send a comprehensive backup zip file to the user."""
+    import zipfile
+    import tempfile
+    import shutil
+    from datetime import datetime
+    
     check = await check_admin_privilege(update)
     if check:
         return check
-    await update.message.reply_document(
-        document=open("config.json", "r", encoding="utf8"),  # pylint: disable=consider-using-with
-        caption="Here is the backup file!",
-    )
+    
+    try:
+        await update.message.reply_text("📦 Creating backup... Please wait.")
+        
+        # Create temp directory for backup
+        temp_dir = tempfile.mkdtemp()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_name = f"pg-limiter-backup-{timestamp}.zip"
+        zip_path = os.path.join(temp_dir, zip_name)
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # Add config files from /etc/opt/pg-limiter/ (or local .env)
+            config_files = [
+                (".env", "config/.env"),
+            ]
+            for src, dst in config_files:
+                if os.path.exists(src):
+                    zipf.write(src, dst)
+            
+            # Also check standard Docker paths
+            docker_config_dir = "/etc/opt/pg-limiter"
+            if os.path.exists(docker_config_dir):
+                for filename in os.listdir(docker_config_dir):
+                    filepath = os.path.join(docker_config_dir, filename)
+                    if os.path.isfile(filepath):
+                        zipf.write(filepath, f"config/{filename}")
+            
+            # Add data files from /var/lib/pg-limiter/ (or local data/)
+            data_dirs = [
+                "data",
+                "/var/lib/pg-limiter/data",
+            ]
+            for data_dir in data_dirs:
+                if os.path.exists(data_dir) and os.path.isdir(data_dir):
+                    for root, dirs, files in os.walk(data_dir):
+                        for file in files:
+                            filepath = os.path.join(root, file)
+                            arcname = os.path.join("data", os.path.relpath(filepath, data_dir))
+                            zipf.write(filepath, arcname)
+                    break
+            
+            # Add legacy JSON files if they exist
+            legacy_files = [
+                ".disable_users.json",
+                ".violation_history.json",
+                ".user_groups_backup.json",
+            ]
+            for legacy_file in legacy_files:
+                if os.path.exists(legacy_file):
+                    zipf.write(legacy_file, f"legacy/{legacy_file}")
+            
+            # Add backup info
+            backup_info = f"""PG-Limiter Backup
+Created: {datetime.now().isoformat()}
+Hostname: {os.uname().nodename if hasattr(os, 'uname') else 'unknown'}
+
+Contents:
+- config/: Configuration files (.env, docker-compose.yml)
+- data/: Database and persistent data
+- legacy/: Legacy JSON files (if any)
+
+To restore:
+1. Send this zip file to the bot with /restore command
+2. Or use: pg-limiter restore <this-file.zip>
+"""
+            zipf.writestr("backup_info.txt", backup_info)
+        
+        # Send the zip file
+        with open(zip_path, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=zip_name,
+                caption=(
+                    "✅ <b>Backup created successfully!</b>\n\n"
+                    "📁 This backup includes:\n"
+                    "• Configuration files\n"
+                    "• Database (SQLite)\n"
+                    "• Legacy JSON files (if any)\n\n"
+                    "💡 To restore, use /restore command and send this file."
+                ),
+                parse_mode="HTML",
+            )
+        
+        # Cleanup
+        shutil.rmtree(temp_dir)
+        
+    except Exception as e:
+        await update.message.reply_html(
+            f"❌ <b>Error creating backup:</b>\n"
+            f"<code>{str(e)}</code>"
+        )
 
 
 async def restore_config(update: Update, _context: ContextTypes.DEFAULT_TYPE):
-    """Start the restore process by asking for the config file."""
+    """Start the restore process by asking for the backup file."""
     check = await check_admin_privilege(update)
     if check:
         return check
     await update.message.reply_html(
-        "Please send the config.json backup file to restore.\n"
-        "<b>⚠️ Warning:</b> This will completely replace your current configuration!\n"
-        "Make sure to backup your current config first using /backup if needed."
+        "📥 <b>Restore from Backup</b>\n\n"
+        "Please send your backup file (zip or json format).\n\n"
+        "<b>⚠️ Warning:</b> This will replace your current data!\n"
+        "A backup of your current config will be created automatically."
     )
     return RESTORE_CONFIG
 
 
 async def restore_config_handler(update: Update, _context: ContextTypes.DEFAULT_TYPE):
-    """Handle the uploaded config file and restore it."""
+    """Handle the uploaded backup file and restore it."""
+    import zipfile
+    import tempfile
+    import shutil
+    from datetime import datetime
+    
     try:
         # Check if a document was sent
         if not update.message.document:
             await update.message.reply_html(
-                "❌ Please send a valid config.json file.\n"
+                "❌ Please send a valid backup file (zip or json).\n"
                 "Use /restore to try again."
             )
             return ConversationHandler.END
         
-        # Check file extension
         file_name = update.message.document.file_name
-        if not file_name.endswith('.json'):
-            await update.message.reply_html(
-                "❌ Please send a JSON file (.json extension required).\n"
-                "Use /restore to try again."
-            )
-            return ConversationHandler.END
         
         # Download the file
         file = await update.message.document.get_file()
         file_content = await file.download_as_bytearray()
         
-        # Try to parse JSON to validate it
-        try:
-            config_data = json.loads(file_content.decode('utf-8'))
-        except json.JSONDecodeError as e:
-            await update.message.reply_html(
-                f"❌ Invalid JSON format: {str(e)}\n"
-                "Please check your config file and try again.\n"
-                "Use /restore to try again."
-            )
-            return ConversationHandler.END
-        
-        # Basic validation - check for required keys
-        required_keys = ['BOT_TOKEN']
-        missing_keys = [key for key in required_keys if key not in config_data]
-        if missing_keys:
-            await update.message.reply_html(
-                f"❌ Missing required configuration keys: {', '.join(missing_keys)}\n"
-                "Please ensure your backup file is complete.\n"
-                "Use /restore to try again."
-            )
-            return ConversationHandler.END
-        
-        # Create backup of current config
-        import shutil
-        from datetime import datetime
+        # Create backup of current data first
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"config_backup_{timestamp}.json"
-        shutil.copy("config.json", backup_name)
         
-        # Write the new config
-        with open("config.json", "w", encoding="utf-8") as config_file:
-            json.dump(config_data, config_file, indent=2)
-        
-        await update.message.reply_html(
-            f"✅ <b>Configuration restored successfully!</b>\n\n"
-            f"📄 Your previous config has been backed up as: <code>{backup_name}</code>\n\n"
-            f"⚠️ <b>Important:</b> You may need to restart the application for all changes to take effect.\n"
-            f"Some changes might require a complete restart of the limiter service."
-        )
+        if file_name.endswith('.zip'):
+            # Handle zip backup (new format)
+            temp_dir = tempfile.mkdtemp()
+            zip_path = os.path.join(temp_dir, "backup.zip")
+            
+            with open(zip_path, 'wb') as f:
+                f.write(file_content)
+            
+            with zipfile.ZipFile(zip_path, 'r') as zipf:
+                zipf.extractall(temp_dir)
+            
+            # Restore .env file if present (warn user about manual steps)
+            env_restored = False
+            for env_name in ["config/.env", ".env"]:
+                src_path = os.path.join(temp_dir, env_name)
+                if os.path.exists(src_path):
+                    env_dst = "/etc/opt/pg-limiter/.env" if os.path.exists("/etc/opt/pg-limiter") else ".env"
+                    shutil.copy(src_path, env_dst)
+                    env_restored = True
+                    break
+            
+            # Restore data files
+            data_src = os.path.join(temp_dir, "data")
+            if os.path.exists(data_src):
+                data_dst = "data"
+                if os.path.exists("/var/lib/pg-limiter/data"):
+                    data_dst = "/var/lib/pg-limiter/data"
+                
+                # Copy database files
+                for item in os.listdir(data_src):
+                    src = os.path.join(data_src, item)
+                    dst = os.path.join(data_dst, item)
+                    if os.path.isfile(src):
+                        os.makedirs(data_dst, exist_ok=True)
+                        shutil.copy2(src, dst)
+            
+            # Restore legacy files (for migration)
+            legacy_src = os.path.join(temp_dir, "legacy")
+            if os.path.exists(legacy_src):
+                for item in os.listdir(legacy_src):
+                    src = os.path.join(legacy_src, item)
+                    if os.path.isfile(src):
+                        shutil.copy2(src, item)
+            
+            # Cleanup
+            shutil.rmtree(temp_dir)
+            
+            await update.message.reply_html(
+                "✅ <b>Backup restored successfully!</b>\n\n"
+                "📁 <b>Restored:</b>\n"
+                f"• Environment file: {'✓' if env_restored else '✗'}\n"
+                "• Database: ✓\n\n"
+                "⚠️ <b>Important:</b> Please restart the service for changes to take effect."
+            )
+            
+        elif file_name.endswith('.json'):
+            # Handle legacy JSON config (old format) - migrate to database
+            try:
+                config_data = json.loads(file_content.decode('utf-8'))
+                
+                # Migrate to database using db module
+                from db import get_db, ConfigCRUD, UserLimitCRUD, ExceptUserCRUD
+                
+                async with get_db() as db:
+                    # Import settings to database
+                    if "disable_method" in config_data:
+                        await ConfigCRUD.set(db, "disable_method", str(config_data["disable_method"]))
+                    if "disabled_group_id" in config_data and config_data["disabled_group_id"]:
+                        await ConfigCRUD.set(db, "disabled_group_id", str(config_data["disabled_group_id"]))
+                    if config_data.get("enhanced_details") is not None:
+                        await ConfigCRUD.set(db, "enhanced_details", str(config_data["enhanced_details"]).lower())
+                    if config_data.get("show_single_ip_users") is not None:
+                        await ConfigCRUD.set(db, "show_single_ip_users", str(config_data["show_single_ip_users"]).lower())
+                    if config_data.get("ipinfo_token"):
+                        await ConfigCRUD.set(db, "ipinfo_token", config_data["ipinfo_token"])
+                    
+                    # Import special limits
+                    special_limits = config_data.get("limits", {}).get("special", {})
+                    for username, limit in special_limits.items():
+                        await UserLimitCRUD.set(db, username, limit)
+                    
+                    # Import except users
+                    except_users = config_data.get("except_users", [])
+                    for username in except_users:
+                        await ExceptUserCRUD.add(db, username, "Restored from backup")
+                
+                await update.message.reply_html(
+                    "✅ <b>Legacy config imported to database!</b>\n\n"
+                    "📝 <b>Note:</b> Panel credentials and bot token are now stored in .env file.\n"
+                    "You may need to update your .env file manually.\n\n"
+                    "⚠️ <b>Important:</b> Please restart the service for changes to take effect."
+                )
+                
+            except json.JSONDecodeError as e:
+                await update.message.reply_html(
+                    f"❌ Invalid JSON format: {str(e)}\n"
+                    "Use /restore to try again."
+                )
+                return ConversationHandler.END
+        else:
+            await update.message.reply_html(
+                "❌ Unsupported file format. Please send a .zip or .json file.\n"
+                "Use /restore to try again."
+            )
+            return ConversationHandler.END
         
     except Exception as e:
         await update.message.reply_html(
             f"❌ <b>Error during restore:</b>\n"
             f"<code>{str(e)}</code>\n\n"
-            f"Please check your file and try again.\n"
             f"Use /restore to try again."
         )
     
@@ -2719,13 +2852,10 @@ async def show_enhanced_details_command(update: Update, context: ContextTypes.DE
 
     value = context.args[0].lower() == "on"
     
-    # Update config.json
+    # Update config in database
     try:
-        config = await read_json_file()
-        if "display" not in config:
-            config["display"] = {}
-        config["display"]["show_enhanced_details"] = value
-        await write_json_file(config)
+        from utils.read_config import save_config_value
+        await save_config_value("enhanced_details", str(value).lower())
         
         status = "enabled" if value else "disabled"
         detail_info = (
@@ -2981,9 +3111,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     # Enhanced details menu
     if data == "enhanced_menu":
         try:
-            with open("config.json", "r", encoding="utf-8") as f:
-                config = json.load(f)
-            value = config.get("display", {}).get("show_enhanced_details", True)
+            from utils.read_config import read_config
+            config = await read_config()
+            value = config.get("enhanced_details", True)
             status = "ON ✅" if value else "OFF ❌"
         except:
             status = "Unknown"
@@ -3000,13 +3130,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if data in [CallbackData.ENHANCED_ON, CallbackData.ENHANCED_OFF]:
         value = data == CallbackData.ENHANCED_ON
         try:
-            with open("config.json", "r", encoding="utf-8") as f:
-                config = json.load(f)
-            if "display" not in config:
-                config["display"] = {}
-            config["display"]["show_enhanced_details"] = value
-            with open("config.json", "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2)
+            from utils.read_config import save_config_value
+            await save_config_value("enhanced_details", str(value).lower())
             status = "enabled ✅" if value else "disabled ❌"
             await query.edit_message_text(
                 text=f"✅ Enhanced details <b>{status}</b>",
@@ -3309,12 +3434,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     # Disable by status
     if data == CallbackData.DISABLE_BY_STATUS:
         try:
-            with open("config.json", "r", encoding="utf-8") as f:
-                config = json.load(f)
-            config["disable_method"] = "status"
-            config["disabled_group_id"] = None
-            with open("config.json", "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2)
+            from utils.read_config import save_config_value
+            await save_config_value("disable_method", "status")
+            await save_config_value("disabled_group_id", "")
             await query.edit_message_text(
                 text="✅ <b>Disable Method</b> set to <b>Status</b>\n\n"
                      "Users will be disabled by changing their status to 'disabled'.",
@@ -3406,8 +3528,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     # General limit menu
     if data == "general_limit_menu":
         try:
-            with open("config.json", "r", encoding="utf-8") as f:
-                config = json.load(f)
+            from utils.read_config import read_config
+            config = await read_config()
             current = config.get("limits", {}).get("general", 2)
         except:
             current = 2
@@ -3719,24 +3841,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
     
-    # Backup
+    # Backup - redirect to /backup command
     if data == CallbackData.BACKUP:
-        try:
-            await query.message.reply_document(
-                document=open("config.json", "r", encoding="utf8"),
-                caption="💾 Here is your backup file!"
-            )
-            await query.edit_message_text(
-                text="✅ Backup sent!",
-                reply_markup=create_back_to_main_keyboard(),
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            await query.edit_message_text(
-                text=f"❌ Error: {e}",
-                reply_markup=create_back_to_main_keyboard(),
-                parse_mode="HTML"
-            )
+        await query.edit_message_text(
+            text="💾 <b>Backup</b>\n\n"
+                 + "Use the /backup command to create a full backup (ZIP format).\n"
+                 + "It includes configuration and database files.",
+            reply_markup=create_back_to_main_keyboard(),
+            parse_mode="HTML"
+        )
         return
     
     # Restore
@@ -3745,7 +3858,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(
             text="📥 <b>Restore Config</b>\n\n"
                  + "⚠️ This will replace your current configuration!\n\n"
-                 + "Send the config.json backup file:",
+                 + "Send the backup file (ZIP or legacy JSON):",
             parse_mode="HTML"
         )
         return
@@ -4096,61 +4209,101 @@ async def document_message_handler(update: Update, context: ContextTypes.DEFAULT
     try:
         if not update.message.document:
             await update.message.reply_html(
-                text="❌ Please send a valid config.json file.",
+                text="❌ Please send a valid backup file (ZIP or JSON).",
                 reply_markup=create_back_to_main_keyboard()
             )
             context.user_data["waiting_for"] = None
             return
         
         file_name = update.message.document.file_name
-        if not file_name.endswith('.json'):
+        
+        if file_name.endswith('.zip'):
+            # Handle ZIP backup
+            file = await update.message.document.get_file()
+            file_content = await file.download_as_bytearray()
+            
+            temp_dir = tempfile.mkdtemp()
+            zip_path = os.path.join(temp_dir, "backup.zip")
+            
+            with open(zip_path, 'wb') as f:
+                f.write(file_content)
+            
+            with zipfile.ZipFile(zip_path, 'r') as zipf:
+                zipf.extractall(temp_dir)
+            
+            # Restore data files
+            data_src = os.path.join(temp_dir, "data")
+            if os.path.exists(data_src):
+                data_dst = "data"
+                if os.path.exists("/var/lib/pg-limiter/data"):
+                    data_dst = "/var/lib/pg-limiter/data"
+                
+                for item in os.listdir(data_src):
+                    src = os.path.join(data_src, item)
+                    dst = os.path.join(data_dst, item)
+                    if os.path.isfile(src):
+                        os.makedirs(data_dst, exist_ok=True)
+                        shutil.copy2(src, dst)
+            
+            shutil.rmtree(temp_dir)
+            
             await update.message.reply_html(
-                text="❌ Please send a JSON file.",
+                text="✅ <b>Backup restored!</b>\n\n"
+                     "⚠️ Please restart the service for changes to take effect.",
+                reply_markup=create_back_to_main_keyboard()
+            )
+            
+        elif file_name.endswith('.json'):
+            # Handle legacy JSON config - migrate to database
+            file = await update.message.document.get_file()
+            file_content = await file.download_as_bytearray()
+            
+            try:
+                config_data = json.loads(file_content.decode('utf-8'))
+            except json.JSONDecodeError as e:
+                await update.message.reply_html(
+                    text=f"❌ Invalid JSON format: {e}",
+                    reply_markup=create_back_to_main_keyboard()
+                )
+                context.user_data["waiting_for"] = None
+                return
+            
+            # Migrate to database
+            from utils.read_config import save_config_value
+            from db import get_db, UserLimitCRUD, ExceptUserCRUD
+            
+            async with get_db() as db:
+                # Import settings
+                if "disable_method" in config_data:
+                    await save_config_value("disable_method", config_data["disable_method"])
+                if "disabled_group_id" in config_data and config_data["disabled_group_id"]:
+                    await save_config_value("disabled_group_id", str(config_data["disabled_group_id"]))
+                if config_data.get("enhanced_details") is not None:
+                    await save_config_value("enhanced_details", str(config_data["enhanced_details"]).lower())
+                
+                # Import special limits
+                special_limits = config_data.get("limits", {}).get("special", {})
+                for username, limit in special_limits.items():
+                    await UserLimitCRUD.set(db, username, limit)
+                
+                # Import except users
+                except_users = config_data.get("except_users", [])
+                for username in except_users:
+                    await ExceptUserCRUD.add(db, username, "Restored from backup")
+            
+            await update.message.reply_html(
+                text="✅ <b>Legacy config imported to database!</b>\n\n"
+                     "📝 <b>Note:</b> Panel credentials should be set in .env file.\n"
+                     "⚠️ Restart the service for changes to take effect.",
+                reply_markup=create_back_to_main_keyboard()
+            )
+        else:
+            await update.message.reply_html(
+                text="❌ Please send a ZIP or JSON file.",
                 reply_markup=create_back_to_main_keyboard()
             )
             context.user_data["waiting_for"] = None
             return
-        
-        file = await update.message.document.get_file()
-        file_content = await file.download_as_bytearray()
-        
-        try:
-            config_data = json.loads(file_content.decode('utf-8'))
-        except json.JSONDecodeError as e:
-            await update.message.reply_html(
-                text=f"❌ Invalid JSON format: {e}",
-                reply_markup=create_back_to_main_keyboard()
-            )
-            context.user_data["waiting_for"] = None
-            return
-        
-        # Check for bot_token in the correct nested location
-        bot_token = config_data.get('telegram', {}).get('bot_token')
-        if not bot_token:
-            await update.message.reply_html(
-                text="❌ Missing telegram.bot_token in config file!",
-                reply_markup=create_back_to_main_keyboard()
-            )
-            context.user_data["waiting_for"] = None
-            return
-        
-        # Backup current config
-        import shutil
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"config_backup_{timestamp}.json"
-        shutil.copy("config.json", backup_name)
-        
-        # Write new config
-        with open("config.json", "w", encoding="utf-8") as config_file:
-            json.dump(config_data, config_file, indent=2)
-        
-        await update.message.reply_html(
-            text=f"✅ <b>Configuration restored!</b>\n\n"
-                 + f"📄 Previous config backed up as: <code>{backup_name}</code>\n\n"
-                 + "⚠️ You may need to restart the application.",
-            reply_markup=create_back_to_main_keyboard()
-        )
         
     except Exception as e:
         await update.message.reply_html(

@@ -8,27 +8,40 @@ import aiohttp
 from typing import Dict, Optional
 from utils.logs import logger
 
+# Try to import database-backed subnet cache
+try:
+    from utils.db_handler import get_db_subnet_cache, DB_AVAILABLE
+except ImportError:
+    DB_AVAILABLE = False
+    get_db_subnet_cache = None
+
+
 class ISPDetector:
     """
     A class to detect ISP information for IP addresses
     """
     
-    def __init__(self, token: Optional[str] = None, use_fallback_only: bool = False):
+    def __init__(self, token: Optional[str] = None, use_fallback_only: bool = False, use_db_cache: bool = True):
         """
         Initialize the ISP detector with an optional ipinfo token
         
         Args:
             token (Optional[str]): ipinfo.io API token (optional for basic usage)
             use_fallback_only (bool): If True, use only ip-api.com instead of ipinfo.io
+            use_db_cache (bool): If True, use database-backed subnet cache for persistence
         """
         self.token = token
         self.use_fallback_only = use_fallback_only
+        self.use_db_cache = use_db_cache and DB_AVAILABLE
         self.cache = {}  # Simple cache to avoid repeated API calls
         self.rate_limit_delay = 1  # 1 second delay between requests
         self.last_request_time = 0
         self.rate_limited = False  # Track if we're rate limited
         self._session = None  # Shared aiohttp session
+        self._db_cache = get_db_subnet_cache() if self.use_db_cache else None
         
+        if self.use_db_cache:
+            logger.info("ISPDetector initialized with database-backed subnet cache")
         if use_fallback_only:
             logger.info("ISPDetector initialized with ip-api.com only (fallback mode)")
         elif token:
@@ -60,12 +73,27 @@ class ISPDetector:
         Returns:
             Dict[str, str]: Dictionary containing ISP information
         """
+        # Check memory cache first
         if ip in self.cache:
             return self.cache[ip]
         
+        # Check database cache (by subnet) if enabled
+        if self._db_cache:
+            try:
+                cached = await self._db_cache.get_cached_isp(ip)
+                if cached:
+                    # Copy to memory cache
+                    self.cache[ip] = cached
+                    logger.debug(f"ISP cache hit for {ip} (subnet cache)")
+                    return cached
+            except Exception as e:
+                logger.warning(f"Database cache lookup failed: {e}")
+        
         # If use_fallback_only is enabled, skip ipinfo.io and use ip-api.com directly
         if self.use_fallback_only:
-            return await self._get_isp_fallback(ip)
+            result = await self._get_isp_fallback(ip)
+            await self._save_to_db_cache(ip, result)
+            return result
         
         # If we're rate limited, return default info immediately
         if self.rate_limited:
@@ -110,6 +138,8 @@ class ISPDetector:
                     }
                     self.cache[ip] = isp_info
                     self.last_request_time = asyncio.get_event_loop().time()
+                    # Save to database cache
+                    await self._save_to_db_cache(ip, isp_info)
                     return isp_info
                 elif response.status == 429:
                     # Rate limited - set flag and return default
@@ -118,7 +148,9 @@ class ISPDetector:
                 elif response.status == 403:
                     # Forbidden - try fallback API
                     logger.warning(f"ipinfo.io returned 403 for {ip}, trying fallback API...")
-                    return await self._get_isp_fallback(ip)
+                    result = await self._get_isp_fallback(ip)
+                    await self._save_to_db_cache(ip, result)
+                    return result
                 else:
                     response_text = await response.text()
                     logger.warning(f"Failed to get ISP info for {ip}: HTTP {response.status} - {response_text}")
@@ -126,11 +158,15 @@ class ISPDetector:
         except asyncio.TimeoutError:
             logger.error(f"Timeout getting ISP info for {ip}")
             # Try fallback on timeout
-            return await self._get_isp_fallback(ip)
+            result = await self._get_isp_fallback(ip)
+            await self._save_to_db_cache(ip, result)
+            return result
         except Exception as e:
             logger.error(f"Error getting ISP info for {ip}: {type(e).__name__}: {e}")
             # Try fallback on any error
-            return await self._get_isp_fallback(ip)
+            result = await self._get_isp_fallback(ip)
+            await self._save_to_db_cache(ip, result)
+            return result
         
         # Return default info if lookup fails
         default_info = {
@@ -142,6 +178,20 @@ class ISPDetector:
         }
         self.cache[ip] = default_info
         return default_info
+    
+    async def _save_to_db_cache(self, ip: str, isp_info: Dict[str, str]):
+        """Save ISP info to database cache (by subnet)"""
+        if self._db_cache and isp_info.get("isp") != "Unknown ISP":
+            try:
+                await self._db_cache.cache_isp(
+                    ip=ip,
+                    isp_name=isp_info.get("isp", "Unknown ISP"),
+                    country=isp_info.get("country"),
+                    city=isp_info.get("city"),
+                    region=isp_info.get("region"),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to save ISP to database cache: {e}")
     
     async def _get_isp_fallback(self, ip: str) -> Dict[str, str]:
         """

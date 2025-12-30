@@ -1,0 +1,12 @@
+services:
+  pg-limiter:
+    image: ghcr.io/matindehghanian/pg-limiter:latest
+    container_name: pg-limiter
+    restart: always
+    env_file: .env
+    network_mode: host
+    volumes:
+      # Persistent storage for database and logs
+      - /var/lib/pg-limiter:/var/lib/pg-limiter
+    environment:
+      - TZ=${TZ:-UTC}
