@@ -93,7 +93,7 @@
 
 ```bash
 # Download and run the installer
-sudo bash <(curl -sSL https://raw.githubusercontent.com/MatinDehghanian/PG-Limiter/main/pg-limiter.sh) install
+sudo bash <(curl -sSL https://raw.githubusercontent.com/amirvalie2/PG-Limiter/main/pg-limiter.sh) install
 ```
 
 This will:
@@ -121,7 +121,7 @@ pg-limiter uninstall  # Remove PG-Limiter
 
 ```bash
 # Clone repository
-git clone https://github.com/MatinDehghanian/PG-Limiter.git
+git clone https://github.com/amirvalie2/PG-Limiter.git
 cd PG-Limiter
 
 # Install dependencies
@@ -511,7 +511,7 @@ The default `docker-compose.yml` includes Redis:
 ```yaml
 services:
   pg-limiter:
-    image: ghcr.io/matindehghanian/pg-limiter:latest
+    image: ghcr.io/amirvalie2/pg-limiter:latest
     depends_on:
       - redis
     environment:
