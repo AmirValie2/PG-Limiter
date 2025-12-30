@@ -2,13 +2,25 @@
 
 VERSION="0.4.2"
 
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+log_info() { echo -e "${GREEN}✓${NC} $1"; }
+log_warn() { echo -e "${YELLOW}⚠${NC} $1"; }
+log_error() { echo -e "${RED}❌${NC} $1"; }
+
 echo "╔═══════════════════════════════════════════════════════════════╗"
 echo "║              PG-Limiter v$VERSION Starting...                   ║"
 echo "╚═══════════════════════════════════════════════════════════════╝"
 
 # Ensure data directories exist
-mkdir -p /var/lib/pg-limiter/data
-mkdir -p /var/lib/pg-limiter/logs
+echo "Creating data directories..."
+mkdir -p /var/lib/pg-limiter/data || { log_error "Failed to create data directory"; exit 1; }
+mkdir -p /var/lib/pg-limiter/logs || { log_error "Failed to create logs directory"; exit 1; }
+log_info "Data directories ready"
 
 # Create symlinks for data directory
 if [ ! -L "/app/data" ] && [ ! -d "/app/data" ]; then
@@ -17,45 +29,52 @@ fi
 
 # Validate required environment variables
 echo "Validating environment..."
-if [ -z "$PANEL_DOMAIN" ]; then
-    echo "❌ Error: PANEL_DOMAIN is not set"
+MISSING_VARS=""
+[ -z "$PANEL_DOMAIN" ] && MISSING_VARS="$MISSING_VARS PANEL_DOMAIN"
+[ -z "$PANEL_PASSWORD" ] && MISSING_VARS="$MISSING_VARS PANEL_PASSWORD"
+[ -z "$BOT_TOKEN" ] && MISSING_VARS="$MISSING_VARS BOT_TOKEN"
+[ -z "$ADMIN_IDS" ] && MISSING_VARS="$MISSING_VARS ADMIN_IDS"
+
+if [ -n "$MISSING_VARS" ]; then
+    log_error "Missing required environment variables:$MISSING_VARS"
     exit 1
 fi
-if [ -z "$PANEL_PASSWORD" ]; then
-    echo "❌ Error: PANEL_PASSWORD is not set"
-    exit 1
-fi
-if [ -z "$BOT_TOKEN" ]; then
-    echo "❌ Error: BOT_TOKEN is not set"
-    exit 1
-fi
-if [ -z "$ADMIN_IDS" ]; then
-    echo "❌ Error: ADMIN_IDS is not set"
-    exit 1
-fi
-echo "✓ Environment validated"
+log_info "Environment validated"
+echo "    Panel: $PANEL_DOMAIN"
+echo "    Bot Token: ${BOT_TOKEN:0:10}..."
+echo "    Admin IDs: $ADMIN_IDS"
 
 # Initialize database
 echo "Initializing database..."
-python -c "
+if python -c "
 import asyncio
 from db import init_db
 asyncio.run(init_db())
-print('✓ Database initialized')
-"
+" 2>&1; then
+    log_info "Database initialized"
+else
+    log_error "Database initialization failed"
+    exit 1
+fi
 
 # Run database migrations
 echo "Running database migrations..."
-if python -m alembic upgrade head 2>&1; then
-    echo "✓ Migrations applied"
+MIGRATION_OUTPUT=$(python -m alembic upgrade head 2>&1)
+MIGRATION_EXIT=$?
+if [ $MIGRATION_EXIT -eq 0 ]; then
+    log_info "Migrations applied"
 else
-    echo "⚠ Migrations skipped (may already be up to date)"
+    log_warn "Migrations skipped: $MIGRATION_OUTPUT"
 fi
 
 # Migrate from JSON to database if old JSON files exist
 if [ -f "/app/.disable_users.json" ] || [ -f "/app/.violation_history.json" ]; then
     echo "Migrating data from JSON files to database..."
-    python -m db.migrate_from_json || true
+    if python -m db.migrate_from_json 2>&1; then
+        log_info "JSON migration complete"
+    else
+        log_warn "JSON migration skipped"
+    fi
 fi
 
 # Remove old config.json if exists (no longer needed)
@@ -67,8 +86,24 @@ if [ -L "/app/config.json" ]; then
     rm -f /app/config.json
 fi
 
-echo "✓ PG-Limiter initialized"
+# Verify Python can import all required modules
+echo "Verifying modules..."
+if python -c "
+from telegram_bot.main import application
+from utils.read_config import read_config
+from db import get_db
+print('All modules loaded successfully')
+" 2>&1; then
+    log_info "All modules verified"
+else
+    log_error "Module verification failed"
+    exit 1
+fi
+
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+log_info "PG-Limiter v$VERSION initialized successfully"
+echo "═══════════════════════════════════════════════════════════════"
+echo ""
 echo "Starting limiter..."
-echo "Bot Token: ${BOT_TOKEN:0:10}..."
-echo "Admin IDs: $ADMIN_IDS"
 exec python -u limiter.py
