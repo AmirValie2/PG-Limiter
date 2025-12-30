@@ -47,7 +47,11 @@ print('✓ Database initialized')
 
 # Run database migrations
 echo "Running database migrations..."
-python -m alembic upgrade head 2>&1 || echo "⚠ Migrations not applied (may already be up to date)"
+if python -m alembic upgrade head 2>&1; then
+    echo "✓ Migrations applied"
+else
+    echo "⚠ Migrations skipped (may already be up to date)"
+fi
 
 # Migrate from JSON to database if old JSON files exist
 if [ -f "/app/.disable_users.json" ] || [ -f "/app/.violation_history.json" ]; then
